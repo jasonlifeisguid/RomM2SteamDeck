@@ -3,6 +3,7 @@ from classes.RommAPIHelper import RommAPIHelper
 from classes.RomM2SteamDeckDatabase import RomM2SteamDeckDatabase
 import json
 import os
+import sys
 import logging
 import threading
 import time
@@ -16,12 +17,17 @@ import traceback
 download_progress = {}
 download_progress_lock = threading.Lock()
 
-# Determine data directory - use current dir or ~/.config/romm2steamdeck
+# Determine data directory - platform-specific locations
 def get_data_dir():
     """Get the data directory for config and database files."""
     # If running from AppImage or installed location, use user config dir
     if os.environ.get('APPIMAGE') or not os.path.isfile('config.json'):
-        data_dir = os.path.join(os.path.expanduser('~'), '.config', 'romm2steamdeck')
+        if sys.platform == 'win32':
+            # Windows: Use %APPDATA%\romm2steamdeck
+            data_dir = os.path.join(os.environ.get('APPDATA', os.path.expanduser('~')), 'romm2steamdeck')
+        else:
+            # Linux/macOS: Use ~/.config/romm2steamdeck
+            data_dir = os.path.join(os.path.expanduser('~'), '.config', 'romm2steamdeck')
         os.makedirs(data_dir, exist_ok=True)
         return data_dir
     # Otherwise use current directory (development mode)
@@ -126,14 +132,24 @@ def init_database():
         pass  # Indexes already exist
     
     # Insert default config values ONLY if they don't exist (using INSERT OR IGNORE)
+    # Use platform-appropriate default paths
+    if sys.platform == 'win32':
+        default_roms_path = os.path.join(os.path.expanduser('~'), 'Games', 'ROMs')
+        default_downloads = os.path.join(os.path.expanduser('~'), 'Downloads')
+        default_install_path = os.path.join(os.path.expanduser('~'), 'Games', 'Windows')
+    else:
+        default_roms_path = os.path.expanduser('~/retrodeck/roms')
+        default_downloads = os.path.expanduser('~/Downloads')
+        default_install_path = ''
+    
     default_configs = [
         ('romm_api_base_url', ''),
         ('romm_username', ''),
         ('romm_password', ''),
-        ('steamdeck_retrodeck_path', os.path.expanduser('~/retrodeck/roms')),
+        ('steamdeck_retrodeck_path', default_roms_path),
         ('default_platform_id', '249'),  # Default to Windows
-        ('windows_download_path', os.path.expanduser('~/Downloads')),
-        ('windows_install_path', ''),
+        ('windows_download_path', default_downloads),
+        ('windows_install_path', default_install_path),
         ('theme', 'oled-limited')  # Default theme
     ]
     
@@ -723,10 +739,19 @@ def download_windows_game_async(romm, rom_id, filename, rom_name, file_size):
         elif filename.lower().endswith('.7z'):
             # Try multiple 7z extraction methods
             extraction_commands = [
-                ['7z', 'x', staging_file, f'-o{install_path}', '-y'],      # Standard 7z (Linux, SteamOS)
+                ['7z', 'x', staging_file, f'-o{install_path}', '-y'],      # Standard 7z (Linux, SteamOS, Windows if in PATH)
                 ['7zz', 'x', staging_file, f'-o{install_path}', '-y'],     # Newer 7-Zip
                 ['unar', '-o', install_path, '-f', staging_file],          # unar (macOS)
             ]
+            
+            # Add Windows-specific 7-Zip paths
+            if sys.platform == 'win32':
+                win_7z_paths = [
+                    os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), '7-Zip', '7z.exe'),
+                    os.path.join(os.environ.get('PROGRAMFILES(X86)', 'C:\\Program Files (x86)'), '7-Zip', '7z.exe'),
+                ]
+                for win_7z in win_7z_paths:
+                    extraction_commands.insert(0, [win_7z, 'x', staging_file, f'-o{install_path}', '-y'])
             
             for cmd in extraction_commands:
                 try:
@@ -744,7 +769,7 @@ def download_windows_game_async(romm, rom_id, filename, rom_name, file_size):
                     continue
             
             if not extract_success:
-                extract_message = "7z not installed - file downloaded but not extracted. Install 7z (Linux/SteamOS) or unar (macOS: brew install unar)"
+                extract_message = "7z not installed - file downloaded but not extracted. Install 7-Zip (Windows/Linux/SteamOS) or unar (macOS: brew install unar)"
         else:
             extract_message = f"Unknown archive format - file saved to {staging_file}"
         
@@ -937,6 +962,8 @@ def api_add_to_steam():
             os.path.expanduser('~/.steam/steam/userdata'),           # Linux/SteamOS
             os.path.expanduser('~/.local/share/Steam/userdata'),     # Linux alternative
             os.path.expanduser('~/Library/Application Support/Steam/userdata'),  # macOS
+            os.path.join(os.environ.get('PROGRAMFILES(X86)', 'C:\\Program Files (x86)'), 'Steam', 'userdata'),  # Windows
+            os.path.join(os.environ.get('PROGRAMFILES', 'C:\\Program Files'), 'Steam', 'userdata'),  # Windows alternative
         ]
         
         userdata_path = None

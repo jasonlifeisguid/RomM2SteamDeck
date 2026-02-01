@@ -1,6 +1,6 @@
 # RomM2SteamDeck
 
-RomM2SteamDeck is a tool to download ROMs and Windows games from your [RomM](https://github.com/rommapp/romm) library directly to your Steam Deck. Browse your game collection by platform and download individual games on-demand.
+RomM2SteamDeck is a tool to download ROMs and Windows games from your [RomM](https://github.com/rommapp/romm) library directly to your Steam Deck, Windows PC, or Linux system. Browse your game collection by platform and download individual games on-demand.
 
 ## Features
 
@@ -13,10 +13,13 @@ RomM2SteamDeck is a tool to download ROMs and Windows games from your [RomM](htt
 - **Multiple Themes** - Choose from 10 different color themes including Steam Deck OLED Limited Edition orange
 - **Platform Folder Mapping** - Auto-configure paths using RomM's folder structure
 - **Responsive UI** - Works on Steam Deck screen, tablets, and phones
+- **Cross-Platform** - Runs on Steam Deck, Linux, Windows, and macOS
 
-## Installation on Steam Deck
+## Installation
 
-### Option 1: Download Pre-built AppImage
+### Steam Deck / Linux
+
+#### Option 1: Download Pre-built AppImage
 
 1. Download the latest `RomM2SteamDeck-x86_64.AppImage` from the Releases page
 2. Make it executable:
@@ -28,7 +31,7 @@ RomM2SteamDeck is a tool to download ROMs and Windows games from your [RomM](htt
    ./RomM2SteamDeck-x86_64.AppImage
    ```
 
-### Option 2: Build AppImage Yourself
+#### Option 2: Build AppImage Yourself
 
 Requirements: A Linux x86_64 system with Python 3.8+ and pip
 
@@ -46,10 +49,44 @@ Requirements: A Linux x86_64 system with Python 3.8+ and pip
 
 3. Copy the resulting AppImage to your Steam Deck
 
+### Windows
+
+#### Option 1: Run from Source
+
+1. Install [Python 3.8+](https://www.python.org/downloads/) (check "Add Python to PATH" during install)
+2. Install [7-Zip](https://www.7-zip.org/) (required for extracting .7z game files)
+3. Clone or download the repository
+4. Open Command Prompt or PowerShell in the project folder:
+   ```cmd
+   pip install -r requirements.txt
+   python app.py
+   ```
+5. Open `http://localhost:5001` in your browser
+
+#### Option 2: Build Standalone Executable
+
+1. Install Python 3.8+ and clone the repository
+2. Run the build script:
+   ```cmd
+   pip install pyinstaller
+   pyinstaller --onedir --name RomM2SteamDeck --add-data "templates;templates" --add-data "config.json;." app.py
+   ```
+3. The executable will be in the `dist/RomM2SteamDeck` folder
+
+### macOS
+
+1. Install Python 3.8+ (via Homebrew: `brew install python`)
+2. Install unar for 7z extraction: `brew install unar`
+3. Clone the repository and run:
+   ```bash
+   pip3 install -r requirements.txt
+   python3 app.py
+   ```
+
 ## Configuration
 
-1. Launch the AppImage
-2. Open a browser and navigate to `http://localhost:5001` (or `http://{steamdeck-ip}:5001` from another device)
+1. Launch the application
+2. Open a browser and navigate to `http://localhost:5001`
 3. Click on the **gear icon** (⚙️) in the navigation bar to open Settings
 
 ### Theme Selection
@@ -74,14 +111,18 @@ Select which platform loads by default when opening the app. Defaults to Windows
 
 For Windows games:
 - **Download Staging Path:** Where compressed files are downloaded before extraction
-- **Windows Games Install Path:** Where games are extracted (e.g., `/home/deck/Games/Windows`)
+- **Windows Games Install Path:** Where games are extracted
 
-Windows games will be automatically extracted using 7z (available on SteamOS by default). After extraction, you'll be prompted to add the game to Steam.
+Default paths:
+- **Steam Deck/Linux:** `/home/deck/Games/Windows` or as configured
+- **Windows:** `C:\Users\{username}\Games\Windows`
+
+Windows games will be automatically extracted using 7z. After extraction, you'll be prompted to add the game to Steam.
 
 ### Platform Folder Mapping
 
 1. Click **Refresh Platforms from RomM** to fetch your platforms
-2. Set the **Base Path for ROMs** (e.g., `/home/deck/retrodeck/roms`)
+2. Set the **Base Path for ROMs** (e.g., `/home/deck/retrodeck/roms` or `C:\Games\ROMs`)
 3. Click **Auto-Fill All Paths** to automatically set platform folders using RomM's folder names
 4. Adjust individual platform paths as needed
 
@@ -96,21 +137,32 @@ Windows games will be automatically extracted using 7z (available on SteamOS by 
 ## Requirements
 
 - **RomM instance** with API access enabled
-- **Steam Deck** or Linux x86_64 system
-- **7z** for Windows game extraction (pre-installed on SteamOS)
+- **7-Zip** for Windows game extraction:
+  - Steam Deck/SteamOS: Pre-installed
+  - Linux: `sudo apt install p7zip-full` or equivalent
+  - Windows: Download from [7-zip.org](https://www.7-zip.org/)
+  - macOS: `brew install unar`
 - **RetroDeck, EmuDeck, or similar** emulator setup (optional, for automatic folder organization)
 
 ## Data Storage
 
 Configuration and database are stored in:
+
+**Linux/Steam Deck/macOS:**
 - `~/.config/romm2steamdeck/config.json`
 - `~/.config/romm2steamdeck/romm2steamdeck.db`
 - `~/.config/romm2steamdeck/system.log`
+
+**Windows:**
+- `%APPDATA%\romm2steamdeck\config.json`
+- `%APPDATA%\romm2steamdeck\romm2steamdeck.db`
+- `%APPDATA%\romm2steamdeck\system.log`
 
 ## Development
 
 To run in development mode:
 
+**Linux/macOS:**
 ```bash
 # Create virtual environment
 python3 -m venv venv
@@ -121,6 +173,19 @@ pip install -r requirements.txt
 
 # Run the app
 python3 app.py
+```
+
+**Windows:**
+```cmd
+# Create virtual environment
+python -m venv venv
+venv\Scripts\activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the app
+python app.py
 ```
 
 The app will run on `http://localhost:5001` by default.
