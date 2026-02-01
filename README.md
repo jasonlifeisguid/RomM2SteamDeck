@@ -2,8 +2,6 @@
 
 RomM2SteamDeck is a tool to download ROMs and Windows games from your [RomM](https://github.com/rommapp/romm) library directly to your Steam Deck. Browse your game collection by platform and download individual games on-demand.
 
-![RomM2SteamDeck](/docs/deckrommsync.png)
-
 ## Features
 
 - **Browse by Platform** - View your RomM library organized by platform with a dropdown selector
