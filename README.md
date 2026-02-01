@@ -1,58 +1,151 @@
-# DeckRommSync - Standalone
-DeckRomMSync - Standalone is a project that automatically synchronizes your ROMs from [RomM](https://github.com/rommapp/romm) to your Steam Deck. 
-The games are automatically copied to the correct directory. Retrodeck is required!
-![DeckRomMSync](/docs/deckrommsync.png)
+# RomM2SteamDeck
 
-## Installation
-1. Clone the Repository to your Steamdeck
+RomM2SteamDeck is a tool to download ROMs and Windows games from your [RomM](https://github.com/rommapp/romm) library directly to your Steam Deck. Browse your game collection by platform and download individual games on-demand.
+
+![RomM2SteamDeck](/docs/deckrommsync.png)
+
+## Features
+
+- **Browse by Platform** - View your RomM library organized by platform with a dropdown selector
+- **Download with Progress** - Download individual games with real-time progress bar
+- **Windows Games Support** - Download and extract Windows games (7z/zip) automatically
+- **Add to Steam** - Add downloaded Windows games to Steam as non-Steam games
+- **Download Tracking** - Track downloaded games and delete them when no longer needed
+- **Filesystem Sync** - Automatically detect games downloaded outside the app
+- **Multiple Themes** - Choose from 10 different color themes including Steam Deck OLED Limited Edition orange
+- **Platform Folder Mapping** - Auto-configure paths using RomM's folder structure
+- **Responsive UI** - Works on Steam Deck screen, tablets, and phones
+
+## Installation on Steam Deck
+
+### Option 1: Download Pre-built AppImage
+
+1. Download the latest `RomM2SteamDeck-x86_64.AppImage` from the Releases page
+2. Make it executable:
    ```bash
-    git clone https://github.com/PeriBluGaming/DeckRommSync-Standalone.git
+   chmod +x RomM2SteamDeck-x86_64.AppImage
+   ```
+3. Run it:
+   ```bash
+   ./RomM2SteamDeck-x86_64.AppImage
    ```
 
-2. Create a virtual environment and activate them
+### Option 2: Build AppImage Yourself
+
+Requirements: A Linux x86_64 system with Python 3.8+ and pip
+
+1. Clone the repository:
    ```bash
-    python -m venv venv
-    source venv/bin/activate
+   git clone https://github.com/jasonlifeisguid/RomM2SteamDeck.git
+   cd RomM2SteamDeck
    ```
 
-3. Install Requirements
+2. Run the build script:
    ```bash
-    pip install -r requirements.txt
+   chmod +x build-appimage.sh
+   ./build-appimage.sh
    ```
 
-4. (Optional) Adjust the port in the config.json file. By default, the application runs on port 5000.
+3. Copy the resulting AppImage to your Steam Deck
 
 ## Configuration
-Now the installation is complete and you can start the application with following command. Make sure you have activate the environment, see Installation Point 2.
+
+1. Launch the AppImage
+2. Open a browser and navigate to `http://localhost:5001` (or `http://{steamdeck-ip}:5001` from another device)
+3. Click on the **gear icon** (⚙️) in the navigation bar to open Settings
+
+### Theme Selection
+
+Choose from 10 color themes:
+- OLED Limited Edition (default orange)
+- OLED Black, Classic White, Monochrome
+- Steam Blue, Purple Haze, Matrix Green
+- Crimson Red, Ocean Teal, Sunset Gold
+
+### RomM API Settings
+
+- **RomM API URL:** Your RomM API endpoint (e.g., `http://192.168.1.100:8080/api`)
+- **Username:** Your RomM username
+- **Password:** Your RomM password
+
+### Default Platform
+
+Select which platform loads by default when opening the app. Defaults to Windows (PC).
+
+### Windows Games Download
+
+For Windows games:
+- **Download Staging Path:** Where compressed files are downloaded before extraction
+- **Windows Games Install Path:** Where games are extracted (e.g., `/home/deck/Games/Windows`)
+
+Windows games will be automatically extracted using 7z (available on SteamOS by default). After extraction, you'll be prompted to add the game to Steam.
+
+### Platform Folder Mapping
+
+1. Click **Refresh Platforms from RomM** to fetch your platforms
+2. Set the **Base Path for ROMs** (e.g., `/home/deck/retrodeck/roms`)
+3. Click **Auto-Fill All Paths** to automatically set platform folders using RomM's folder names
+4. Adjust individual platform paths as needed
+
+## Usage
+
+1. Select a platform from the dropdown in the navigation bar
+2. Browse games - click on a game cover to see details
+3. Click **Download** to download a game with progress tracking
+4. For Windows games, after extraction you'll be prompted to select an .exe to add to Steam
+5. Downloaded games show a **Delete** button to remove them
+
+## Requirements
+
+- **RomM instance** with API access enabled
+- **Steam Deck** or Linux x86_64 system
+- **7z** for Windows game extraction (pre-installed on SteamOS)
+- **RetroDeck, EmuDeck, or similar** emulator setup (optional, for automatic folder organization)
+
+## Data Storage
+
+Configuration and database are stored in:
+- `~/.config/romm2steamdeck/config.json`
+- `~/.config/romm2steamdeck/romm2steamdeck.db`
+- `~/.config/romm2steamdeck/system.log`
+
+## Development
+
+To run in development mode:
+
 ```bash
+# Create virtual environment
+python3 -m venv venv
+source venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the app
 python3 app.py
 ```
 
-After starting the application open a Browser `http://{ip-steamdeck}:5000` and click on `Config`.
-Now you have to setup following Settings:
+The app will run on `http://localhost:5001` by default.
 
-### RomM API Settings
-**RomM API URL:** API URL from RomM `http://{ip-romm}:{port-romm}/api`\
-**Username:**   your Username of RomM\
-**Password:**   your Password of RomM
+## API Endpoints
 
-Press Save after entering the data. Then wait 2-3 minutes until the background worker has completed one cycle. Now refresh the Browser (F5)
-(The Background Worker will fetch your Collections / Platforms / etc.)
+- `GET /api/platforms` - List all platforms
+- `GET /api/platform/{id}/roms` - Get ROMs for a platform
+- `GET /api/rom/{id}` - Get ROM details
+- `POST /api/download/{id}` - Start download
+- `GET /api/download/progress/{id}` - SSE progress stream
+- `GET /api/downloads` - List downloaded ROMs
+- `DELETE /api/downloads/{id}` - Delete downloaded ROM
+- `POST /api/add_to_steam` - Add exe to Steam
 
-### Configurate Platform Matching
-After the Background Worker runs for the first time, you can see your Platforms and Collections on the Config-Page.\
-**Steamdeck System Path:** Enter the path of your RetroDeck installation under `Steamdeck System Path`.
+## Acknowledgments
 
-Below, you will see a table with all platforms.
-For each platform, enter the folder name of your RetroDeck platform. For example: `Playstation 1 -> psx` and press Save.
-**Note: You must press Save for every Platform your set!!!**
-![Platform-Matching](/docs/platform_matching.png)
+This project was inspired by and built upon the work of:
 
-### Activate Collection Sync
-To automatically sync the ROMs of one or more collections, you need to enable the collection.
+- **[DeckRommSync-Standalone](https://github.com/PeriBluGaming/DeckRommSync-Standalone)** by PeriBluGaming - The original project that provided the foundation for this tool. Thank you for the great idea and initial implementation!
 
-On the Config page, you'll find the "Sync Collections" section. Here, your collections from RomM are displayed. You can enable/disable synchronization using the checkboxes.
+- **[RomM](https://github.com/rommapp/romm)** - An amazing ROM management solution that makes organizing and serving game libraries a breeze. This project wouldn't exist without RomM's excellent API.
 
-**Note: Click Save after enabling it.**
+## License
 
-After that, the synchronization will automatic run!
+See [LICENSE.md](LICENSE.md)

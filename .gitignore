@@ -1,7 +1,46 @@
+# Virtual environment
+venv/
+env/
+.venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Logs
+*.log
 system.log
-.vscode/settings.json
 background_worker.log
+TEST_background_worker.log
+
+# Database (user-specific data)
+*.db
+
+# IDE settings
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test files
 test.py
 tests/*
+
+# Build artifacts
 output/*
-TEST_background_worker.log
+dist/
+build/
+*.spec
+*.AppImage
+*.AppDir/
+build_venv/
+appimagetool-x86_64.AppImage
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env

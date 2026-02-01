@@ -1,6 +1,6 @@
 MIT License (Modified - No Selling)
 
-Copyright (c) 2025 PeriBluGaming
+Copyright (c) 2026 jasonlifeisguid
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

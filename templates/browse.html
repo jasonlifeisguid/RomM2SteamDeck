@@ -1,0 +1,916 @@
+{% extends "base.html" %}
+{% block content %}
+    <section class="section py-4 px-3" id="roms-section">
+        <div class="container is-fluid">
+            <div id="roms-loading" class="has-text-centered" style="display: none;">
+                <i class="fa-solid fa-spinner fa-spin fa-2xl"></i>
+                <p class="mt-3">Loading games...</p>
+            </div>
+            <div id="roms-error" class="notification is-danger" style="display: none;">
+                <p id="roms-error-message">Failed to load games.</p>
+            </div>
+            <div id="roms-container" style="display: none;">
+                <div class="columns is-multiline is-mobile" id="roms-list">
+                    <!-- ROMs will be loaded here -->
+                </div>
+            </div>
+        </div>
+    </section>
+
+    <!-- Add to Steam Modal -->
+    <div class="modal" id="add-to-steam-modal">
+        <div class="modal-background" onclick="closeAddToSteamModal()"></div>
+        <div class="modal-card" style="max-width: 600px;">
+            <header class="modal-card-head" style="background-color: var(--theme-card-bg, #1a1a2e);">
+                <p class="modal-card-title" style="color: var(--theme-text, #fff);">Add to Steam</p>
+                <button class="delete" aria-label="close" onclick="closeAddToSteamModal()"></button>
+            </header>
+            <section class="modal-card-body" style="background-color: var(--theme-body-bg, #0a0a0a);">
+                <p class="mb-4" style="color: var(--theme-text-muted);">Select an executable to add to Steam as a non-Steam game:</p>
+                <div id="exe-list" class="exe-list">
+                    <!-- Exe files will be listed here -->
+                </div>
+            </section>
+            <footer class="modal-card-foot" style="background-color: var(--theme-card-bg, #1a1a2e); justify-content: flex-end;">
+                <button class="button" onclick="closeAddToSteamModal()">Skip</button>
+                <button class="button is-primary" id="add-to-steam-btn" onclick="addSelectedToSteam()" disabled>
+                    <span class="icon"><i class="fa-brands fa-steam"></i></span>
+                    <span>Add to Steam</span>
+                </button>
+            </footer>
+        </div>
+    </div>
+
+    <!-- Game Details Modal -->
+    <div class="modal" id="game-details-modal">
+        <div class="modal-background" onclick="closeGameModal()"></div>
+        <div class="modal-card" style="max-width: 800px; width: 95%;">
+            <header class="modal-card-head" style="background-color: var(--theme-card-bg, #1a1a2e);">
+                <p class="modal-card-title" id="modal-game-title" style="color: var(--theme-text, #fff);">Game Details</p>
+                <button class="delete" aria-label="close" onclick="closeGameModal()"></button>
+            </header>
+            <section class="modal-card-body" style="background-color: var(--theme-body-bg, #0a0a0a);">
+                <div id="modal-loading" class="has-text-centered py-5">
+                    <i class="fa-solid fa-spinner fa-spin fa-2xl"></i>
+                    <p class="mt-3">Loading game details...</p>
+                </div>
+                <div id="modal-content" style="display: none;">
+                    <div class="columns">
+                        <div class="column is-4">
+                            <figure class="image">
+                                <img id="modal-cover" src="" alt="Cover" style="border-radius: 8px;">
+                            </figure>
+                        </div>
+                        <div class="column is-8">
+                            <div class="content">
+                                <p id="modal-summary" class="mb-4" style="color: var(--theme-text-muted, #aaa);"></p>
+                                
+                                <div class="game-meta">
+                                    <div class="columns is-multiline is-mobile">
+                                        <div class="column is-6">
+                                            <strong style="color: var(--theme-primary);">File Name</strong>
+                                            <p id="modal-filename" class="is-size-7" style="word-break: break-all;"></p>
+                                        </div>
+                                        <div class="column is-6">
+                                            <strong style="color: var(--theme-primary);">File Size</strong>
+                                            <p id="modal-filesize"></p>
+                                        </div>
+                                        <div class="column is-6">
+                                            <strong style="color: var(--theme-primary);">Platform</strong>
+                                            <p id="modal-platform"></p>
+                                        </div>
+                                        <div class="column is-6">
+                                            <strong style="color: var(--theme-primary);">Region</strong>
+                                            <p id="modal-region"></p>
+                                        </div>
+                                    </div>
+                                </div>
+                                
+                                <div id="modal-genres" class="mt-4" style="display: none;">
+                                    <strong style="color: var(--theme-primary);">Genres</strong>
+                                    <div class="tags mt-2" id="modal-genres-tags"></div>
+                                </div>
+                                
+                                <div id="modal-links" class="mt-4">
+                                    <a id="modal-romm-link" href="#" target="_blank" class="button is-small is-outlined" style="border-color: var(--theme-primary); color: var(--theme-primary);">
+                                        <span class="icon"><i class="fa-solid fa-external-link"></i></span>
+                                        <span>View in RomM</span>
+                                    </a>
+                                    <a id="modal-igdb-link" href="#" target="_blank" class="button is-small is-outlined ml-2" style="border-color: var(--theme-primary); color: var(--theme-primary); display: none;">
+                                        <span class="icon"><i class="fa-solid fa-gamepad"></i></span>
+                                        <span>IGDB</span>
+                                    </a>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+            <footer class="modal-card-foot" style="background-color: var(--theme-card-bg, #1a1a2e); justify-content: flex-end;">
+                <button class="button" onclick="closeGameModal()">Close</button>
+                <button class="button is-primary" id="modal-download-btn" onclick="modalDownload()">
+                    <span class="icon"><i class="fa-solid fa-download"></i></span>
+                    <span>Download</span>
+                </button>
+            </footer>
+        </div>
+    </div>
+
+    <script>
+        let currentPlatformId = null;
+        let downloadingRoms = new Set();
+        let downloadedRoms = new Set();
+        let platformsData = [];
+        let currentModalRomId = null;
+        let currentModalRomName = null;
+        let pendingExeFiles = [];
+        let pendingGameName = '';
+        let selectedExePath = null;
+        const rommBaseUrl = {{ romm_base_url|tojson }};
+        const DEFAULT_PLATFORM_ID = {{ default_platform_id|tojson }};
+        const WINDOWS_PLATFORM_ID = 249;
+
+        // Check if we should load a specific platform directly from URL
+        const urlPlatformId = {{ platform_id|tojson }};
+
+        // Load platforms on page load
+        document.addEventListener('DOMContentLoaded', function() {
+            loadPlatformsDropdown();
+        });
+
+        // Handle browser back/forward buttons
+        window.addEventListener('popstate', function(event) {
+            if (event.state && event.state.platformId) {
+                const select = document.getElementById('platform-select');
+                if (select) {
+                    select.value = event.state.platformId;
+                    const platform = platformsData.find(p => p.id === event.state.platformId);
+                    loadRoms(event.state.platformId, platform ? platform.name : 'Games');
+                }
+            }
+        });
+
+        function loadPlatformsDropdown() {
+            // Create the dropdown in the navbar
+            const navContainer = document.getElementById('navbar-platform-container');
+            if (navContainer) {
+                navContainer.innerHTML = `
+                    <div class="select">
+                        <select id="platform-select" onchange="onPlatformChange()">
+                            <option value="">Loading...</option>
+                        </select>
+                    </div>
+                `;
+            }
+            
+            fetch('/api/platforms')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.success && data.platforms) {
+                        // Filter and sort platforms
+                        platformsData = data.platforms
+                            .filter(platform => (platform.rom_count || 0) > 0)
+                            .sort((a, b) => a.name.localeCompare(b.name));
+                        
+                        populatePlatformSelect();
+                        
+                        // Load initial platform - use URL param, or default
+                        const initialPlatformId = urlPlatformId || DEFAULT_PLATFORM_ID;
+                        const select = document.getElementById('platform-select');
+                        select.value = initialPlatformId;
+                        
+                        // If default not found, use first platform
+                        if (!select.value && platformsData.length > 0) {
+                            select.value = platformsData[0].id;
+                        }
+                        
+                        const finalPlatformId = parseInt(select.value);
+                        const platform = platformsData.find(p => p.id === finalPlatformId);
+                        
+                        // Update URL if we're on root path
+                        if (finalPlatformId && !urlPlatformId) {
+                            history.replaceState({ platformId: finalPlatformId }, '', `/platform/${finalPlatformId}`);
+                        } else if (finalPlatformId) {
+                            // Set initial state for back button support
+                            history.replaceState({ platformId: finalPlatformId }, '', window.location.pathname);
+                        }
+                        
+                        loadRoms(finalPlatformId, platform ? platform.name : 'Games');
+                    }
+                })
+                .catch(error => {
+                    console.error('Error loading platforms:', error);
+                    const select = document.getElementById('platform-select');
+                    if (select) {
+                        select.innerHTML = '<option value="">Failed to load</option>';
+                    }
+                });
+        }
+
+        function populatePlatformSelect() {
+            const select = document.getElementById('platform-select');
+            if (select) {
+                select.innerHTML = platformsData.map(platform => 
+                    `<option value="${platform.id}">${escapeHtml(platform.name)}</option>`
+                ).join('');
+            }
+        }
+
+        function onPlatformChange() {
+            const select = document.getElementById('platform-select');
+            const platformId = parseInt(select.value);
+            if (platformId) {
+                const platform = platformsData.find(p => p.id === platformId);
+                
+                // Update URL to reflect selected platform
+                const newUrl = `/platform/${platformId}`;
+                history.pushState({ platformId: platformId }, '', newUrl);
+                
+                loadRoms(platformId, platform ? platform.name : 'Games');
+            }
+        }
+
+        function loadRoms(platformId, platformName) {
+            currentPlatformId = platformId;
+            
+            // Show loading state
+            document.getElementById('roms-loading').style.display = 'block';
+            document.getElementById('roms-container').style.display = 'none';
+            document.getElementById('roms-error').style.display = 'none';
+
+            // First fetch ROMs
+            fetch(`/api/platform/${platformId}/roms`)
+                .then(r => r.json())
+                .then(romsData => {
+                    if (!romsData.success) {
+                        throw new Error(romsData.error || 'Failed to load ROMs');
+                    }
+                    
+                    // Sync downloads with filesystem, then fetch download status
+                    return fetch(`/api/downloads/sync/${platformId}`, { method: 'POST' })
+                        .then(r => r.json())
+                        .then(syncData => {
+                            if (syncData.success && (syncData.changes.added > 0 || syncData.changes.removed > 0)) {
+                                console.log(`Sync: ${syncData.changes.added} added, ${syncData.changes.removed} removed`);
+                            }
+                            return fetch('/api/downloads').then(r => r.json());
+                        })
+                        .then(downloadsData => {
+                            return { romsData, downloadsData };
+                        });
+                })
+                .then(({ romsData, downloadsData }) => {
+                    document.getElementById('roms-loading').style.display = 'none';
+                    
+                    // Update downloaded ROMs set
+                    if (downloadsData.success) {
+                        downloadedRoms = new Set(downloadsData.downloaded_ids);
+                    }
+                    
+                    const roms = romsData.roms || [];
+                    renderRoms(roms);
+                    document.getElementById('roms-container').style.display = 'block';
+                    window.scrollTo(0, 0);
+                })
+                .catch(error => {
+                    console.error('Error loading ROMs:', error);
+                    document.getElementById('roms-loading').style.display = 'none';
+                    document.getElementById('roms-error-message').textContent = 
+                        `Failed to load games: ${error.message || 'Unknown error'}`;
+                    document.getElementById('roms-error').style.display = 'block';
+                });
+        }
+
+        function renderRoms(roms) {
+            const container = document.getElementById('roms-list');
+            container.innerHTML = '';
+
+            console.log('renderRoms called with', roms.length, 'roms');
+
+            if (!roms || roms.length === 0) {
+                container.innerHTML = '<div class="column is-full"><p class="has-text-centered py-4">No games found for this platform.</p></div>';
+                return;
+            }
+
+            // Base64 encoded gray placeholder image
+            const fallbackImg = 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDAiIGhlaWdodD0iMzAwIj48cmVjdCBmaWxsPSIjMjIyIiB3aWR0aD0iMjAwIiBoZWlnaHQ9IjMwMCIvPjx0ZXh0IHg9IjEwMCIgeT0iMTUwIiBmaWxsPSIjNDQ0IiBmb250LXNpemU9IjE0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5ObyBJbWFnZTwvdGV4dD48L3N2Zz4=';
+
+            roms.forEach((rom, index) => {
+                try {
+                    const col = document.createElement('div');
+                    col.className = 'column is-2-desktop is-3-tablet is-6-mobile';
+                    col.id = `rom-${rom.id}`;
+                    
+                    const romName = rom.name || 'Unknown';
+                    
+                    const isDownloaded = downloadedRoms.has(rom.id);
+                    
+                    col.innerHTML = `
+                        <div class="rom-card">
+                            <div class="rom-card-image" onclick="openGameModal(${rom.id})" style="cursor: pointer;">
+                                <img class="cover-img" src="" alt="Cover">
+                                <div class="rom-card-overlay">
+                                    <span class="rom-title"></span>
+                                </div>
+                            </div>
+                            <div class="download-container" id="download-container-${rom.id}">
+                                <button class="button ${isDownloaded ? 'is-danger' : 'is-primary'} is-fullwidth download-btn" id="download-btn-${rom.id}">
+                                    <span class="icon"><i class="fa-solid ${isDownloaded ? 'fa-trash' : 'fa-download'}"></i></span>
+                                    <span>${isDownloaded ? 'Delete' : 'Download'}</span>
+                                </button>
+                                <div class="progress-wrapper" id="progress-wrapper-${rom.id}" style="display: none;">
+                                    <progress class="progress is-small is-primary" id="progress-bar-${rom.id}" value="0" max="100">0%</progress>
+                                    <span class="progress-text" id="progress-text-${rom.id}">0%</span>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                    
+                    // Set image src safely with error handler - prefer larger cover
+                    const img = col.querySelector('.cover-img');
+                    // RomM provides path_cover_large for higher res, url_cover for external URLs
+                    let coverUrl = '';
+                    if (rom.path_cover_large && rommBaseUrl) {
+                        coverUrl = rommBaseUrl + rom.path_cover_large;
+                    } else if (rom.url_cover) {
+                        coverUrl = rom.url_cover;
+                    }
+                    img.src = coverUrl || fallbackImg;
+                    img.onerror = function() { this.src = fallbackImg; };
+                    
+                    // Set title safely
+                    col.querySelector('.rom-title').textContent = romName;
+                    
+                    // Add click handler for download/delete button
+                    col.querySelector('.download-btn').addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        if (downloadedRoms.has(rom.id)) {
+                            deleteRom(rom.id, romName);
+                        } else {
+                            downloadRom(rom.id, romName);
+                        }
+                    });
+                    
+                    container.appendChild(col);
+                    
+                    if (index < 3) {
+                        console.log(`Rendered ROM ${index}:`, rom.name);
+                    }
+                } catch (err) {
+                    console.error('Error rendering ROM:', rom, err);
+                }
+            });
+            
+            console.log('Finished rendering, container has', container.children.length, 'items');
+        }
+
+        function downloadRom(romId, romName) {
+            if (downloadingRoms.has(romId)) {
+                return; // Already downloading
+            }
+
+            downloadingRoms.add(romId);
+            const btn = document.getElementById(`download-btn-${romId}`);
+            const progressWrapper = document.getElementById(`progress-wrapper-${romId}`);
+            const progressBar = document.getElementById(`progress-bar-${romId}`);
+            const progressText = document.getElementById(`progress-text-${romId}`);
+            
+            // Hide button, show progress bar
+            btn.style.display = 'none';
+            progressWrapper.style.display = 'block';
+            progressBar.value = 0;
+            progressText.textContent = 'Starting...';
+
+            // Start the download
+            fetch(`/api/download/${romId}`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Connect to SSE for progress updates
+                    const eventSource = new EventSource(`/api/download/progress/${romId}`);
+                    
+                    eventSource.onmessage = function(event) {
+                        const progress = JSON.parse(event.data);
+                        
+                        if (progress.status === 'downloading') {
+                            progressBar.value = progress.progress;
+                            const downloadedMB = (progress.downloaded / (1024 * 1024)).toFixed(1);
+                            const totalMB = (progress.total / (1024 * 1024)).toFixed(1);
+                            progressText.textContent = `${progress.progress}% (${downloadedMB}/${totalMB} MB)`;
+                        } else if (progress.status === 'extracting') {
+                            progressBar.value = 100;
+                            progressText.textContent = 'Extracting...';
+                            progressBar.classList.remove('is-primary');
+                            progressBar.classList.add('is-warning');
+                        } else if (progress.status === 'complete' || progress.status === 'extracted') {
+                            eventSource.close();
+                            downloadingRoms.delete(romId);
+                            downloadedRoms.add(romId);
+                            
+                            // Show delete button (since it's now downloaded)
+                            progressWrapper.style.display = 'none';
+                            btn.style.display = 'flex';
+                            btn.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span><span>Delete</span>';
+                            btn.classList.remove('is-primary', 'is-warning', 'is-success');
+                            btn.classList.add('is-danger');
+                            btn.disabled = false;
+                            
+                            // Check if this is a Windows game with exe files
+                            if (progress.exe_files && progress.exe_files.length > 0) {
+                                showAddToSteamModal(progress.exe_files, progress.rom_name || romName);
+                            }
+                        } else if (progress.status === 'error') {
+                            eventSource.close();
+                            downloadingRoms.delete(romId);
+                            
+                            // Show error state
+                            progressWrapper.style.display = 'none';
+                            btn.style.display = 'flex';
+                            btn.innerHTML = '<span class="icon"><i class="fa-solid fa-xmark"></i></span><span>Failed</span>';
+                            btn.classList.remove('is-primary', 'is-warning');
+                            btn.classList.add('is-danger');
+                            btn.disabled = false;
+                            console.error('Download error:', progress.error);
+                        }
+                    };
+                    
+                    eventSource.onerror = function() {
+                        eventSource.close();
+                        // Check if download might have completed despite error
+                        setTimeout(() => {
+                            if (downloadingRoms.has(romId)) {
+                                downloadingRoms.delete(romId);
+                                progressWrapper.style.display = 'none';
+                                btn.style.display = 'flex';
+                                btn.innerHTML = '<span class="icon"><i class="fa-solid fa-download"></i></span><span>Download</span>';
+                                btn.classList.remove('is-warning', 'is-success', 'is-danger');
+                                btn.classList.add('is-primary');
+                                btn.disabled = false;
+                            }
+                        }, 1000);
+                    };
+                } else {
+                    // Initial request failed
+                    downloadingRoms.delete(romId);
+                    progressWrapper.style.display = 'none';
+                    btn.style.display = 'flex';
+                    btn.innerHTML = '<span class="icon"><i class="fa-solid fa-xmark"></i></span><span>Failed</span>';
+                    btn.classList.remove('is-primary');
+                    btn.classList.add('is-danger');
+                    btn.disabled = false;
+                    console.error('Download failed:', data.error);
+                }
+            })
+            .catch(error => {
+                downloadingRoms.delete(romId);
+                progressWrapper.style.display = 'none';
+                btn.style.display = 'flex';
+                btn.innerHTML = '<span class="icon"><i class="fa-solid fa-xmark"></i></span><span>Error</span>';
+                btn.classList.remove('is-primary');
+                btn.classList.add('is-danger');
+                btn.disabled = false;
+                console.error('Download error:', error);
+            });
+        }
+
+        function openGameModal(romId) {
+            currentModalRomId = romId;
+            const modal = document.getElementById('game-details-modal');
+            const loading = document.getElementById('modal-loading');
+            const content = document.getElementById('modal-content');
+            
+            // Show modal with loading state
+            modal.classList.add('is-active');
+            loading.style.display = 'block';
+            content.style.display = 'none';
+            
+            // Fetch game details
+            fetch(`/api/rom/${romId}`)
+                .then(r => r.json())
+                .then(data => {
+                    loading.style.display = 'none';
+                    
+                    if (data.success && data.rom) {
+                        const rom = data.rom;
+                        currentModalRomName = rom.name || 'Unknown';
+                        
+                        // Populate modal
+                        document.getElementById('modal-game-title').textContent = rom.name || 'Unknown Game';
+                        
+                        // Cover image
+                        const coverImg = document.getElementById('modal-cover');
+                        let coverUrl = '';
+                        if (rom.path_cover_large && rommBaseUrl) {
+                            coverUrl = rommBaseUrl + rom.path_cover_large;
+                        } else if (rom.url_cover) {
+                            coverUrl = rom.url_cover;
+                        }
+                        coverImg.src = coverUrl || 'data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHdpZHRoPSIyMDAiIGhlaWdodD0iMzAwIj48cmVjdCBmaWxsPSIjMjIyIiB3aWR0aD0iMjAwIiBoZWlnaHQ9IjMwMCIvPjx0ZXh0IHg9IjEwMCIgeT0iMTUwIiBmaWxsPSIjNDQ0IiBmb250LXNpemU9IjE0IiB0ZXh0LWFuY2hvcj0ibWlkZGxlIj5ObyBJbWFnZTwvdGV4dD48L3N2Zz4=';
+                        
+                        // Summary
+                        const summary = rom.summary || rom.igdb_metadata?.summary || 'No description available.';
+                        document.getElementById('modal-summary').textContent = summary;
+                        
+                        // File info
+                        document.getElementById('modal-filename').textContent = rom.fs_name || 'Unknown';
+                        const fileSize = rom.fs_size_bytes ? formatFileSize(rom.fs_size_bytes) : 'Unknown';
+                        document.getElementById('modal-filesize').textContent = fileSize;
+                        
+                        // Platform
+                        const platform = platformsData.find(p => p.id === rom.platform_id);
+                        document.getElementById('modal-platform').textContent = platform ? platform.name : `Platform ${rom.platform_id}`;
+                        
+                        // Region
+                        const regions = rom.regions || [];
+                        document.getElementById('modal-region').textContent = regions.length > 0 ? regions.join(', ') : 'Unknown';
+                        
+                        // Genres
+                        const genres = rom.genres || rom.igdb_metadata?.genres || [];
+                        const genresContainer = document.getElementById('modal-genres');
+                        const genresTags = document.getElementById('modal-genres-tags');
+                        if (genres.length > 0) {
+                            genresContainer.style.display = 'block';
+                            genresTags.innerHTML = genres.map(g => 
+                                `<span class="tag" style="background-color: var(--theme-primary); color: var(--theme-navbar-text);">${typeof g === 'string' ? g : g.name}</span>`
+                            ).join('');
+                        } else {
+                            genresContainer.style.display = 'none';
+                        }
+                        
+                        // Links
+                        const rommLink = document.getElementById('modal-romm-link');
+                        // Construct RomM web URL (remove /api from base URL)
+                        const rommWebUrl = rommBaseUrl ? rommBaseUrl.replace('/api', '') : '';
+                        rommLink.href = `${rommWebUrl}/rom/${rom.id}`;
+                        
+                        const igdbLink = document.getElementById('modal-igdb-link');
+                        if (rom.igdb_id) {
+                            igdbLink.href = `https://www.igdb.com/games/${rom.igdb_slug || rom.igdb_id}`;
+                            igdbLink.style.display = 'inline-flex';
+                        } else {
+                            igdbLink.style.display = 'none';
+                        }
+                        
+                        // Update download button state
+                        const downloadBtn = document.getElementById('modal-download-btn');
+                        if (downloadedRoms.has(romId)) {
+                            downloadBtn.innerHTML = '<span class="icon"><i class="fa-solid fa-trash"></i></span><span>Delete</span>';
+                            downloadBtn.classList.remove('is-primary');
+                            downloadBtn.classList.add('is-danger');
+                        } else {
+                            downloadBtn.innerHTML = '<span class="icon"><i class="fa-solid fa-download"></i></span><span>Download</span>';
+                            downloadBtn.classList.remove('is-danger');
+                            downloadBtn.classList.add('is-primary');
+                        }
+                        
+                        content.style.display = 'block';
+                    } else {
+                        document.getElementById('modal-game-title').textContent = 'Error';
+                        document.getElementById('modal-summary').textContent = data.error || 'Failed to load game details.';
+                        content.style.display = 'block';
+                    }
+                })
+                .catch(error => {
+                    console.error('Error fetching game details:', error);
+                    loading.style.display = 'none';
+                    document.getElementById('modal-game-title').textContent = 'Error';
+                    document.getElementById('modal-summary').textContent = 'Failed to load game details.';
+                    content.style.display = 'block';
+                });
+        }
+        
+        function closeGameModal() {
+            document.getElementById('game-details-modal').classList.remove('is-active');
+            currentModalRomId = null;
+            currentModalRomName = null;
+        }
+        
+        function modalDownload() {
+            if (!currentModalRomId) return;
+            
+            closeGameModal();
+            
+            if (downloadedRoms.has(currentModalRomId)) {
+                deleteRom(currentModalRomId, currentModalRomName);
+            } else {
+                downloadRom(currentModalRomId, currentModalRomName);
+            }
+        }
+        
+        function formatFileSize(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+        }
+        
+        function showAddToSteamModal(exeFiles, gameName) {
+            pendingExeFiles = exeFiles;
+            pendingGameName = gameName;
+            selectedExePath = null;
+            
+            const exeList = document.getElementById('exe-list');
+            exeList.innerHTML = '';
+            
+            exeFiles.forEach((exe, index) => {
+                const item = document.createElement('label');
+                item.className = 'exe-item';
+                item.innerHTML = `
+                    <input type="radio" name="exe-select" value="${index}" onchange="selectExe(${index})">
+                    <span class="exe-icon"><i class="fa-solid fa-file-code"></i></span>
+                    <span class="exe-name">${escapeHtml(exe.name)}</span>
+                `;
+                exeList.appendChild(item);
+            });
+            
+            // Reset button state
+            const btn = document.getElementById('add-to-steam-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="icon"><i class="fa-brands fa-steam"></i></span><span>Add to Steam</span>';
+            btn.classList.remove('is-success');
+            btn.classList.add('is-primary');
+            
+            document.getElementById('add-to-steam-modal').classList.add('is-active');
+        }
+        
+        function closeAddToSteamModal() {
+            document.getElementById('add-to-steam-modal').classList.remove('is-active');
+            pendingExeFiles = [];
+            pendingGameName = '';
+            selectedExePath = null;
+        }
+        
+        function selectExe(index) {
+            selectedExePath = pendingExeFiles[index].path;
+            document.getElementById('add-to-steam-btn').disabled = false;
+            
+            // Update visual selection
+            document.querySelectorAll('.exe-item').forEach((item, i) => {
+                item.classList.toggle('selected', i === index);
+            });
+        }
+        
+        function addSelectedToSteam() {
+            if (!selectedExePath) return;
+            
+            const btn = document.getElementById('add-to-steam-btn');
+            btn.disabled = true;
+            btn.innerHTML = '<span class="icon"><i class="fa-solid fa-spinner fa-spin"></i></span><span>Adding...</span>';
+            
+            fetch('/api/add_to_steam', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    exe_path: selectedExePath,
+                    game_name: pendingGameName
+                })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    btn.innerHTML = '<span class="icon"><i class="fa-solid fa-check"></i></span><span>Added!</span>';
+                    btn.classList.remove('is-primary');
+                    btn.classList.add('is-success');
+                    
+                    // Show reminder to restart Steam
+                    alert('Game added to Steam!\n\nIMPORTANT: You must fully close and restart Steam for the game to appear in your library.');
+                    
+                    closeAddToSteamModal();
+                } else {
+                    btn.innerHTML = '<span class="icon"><i class="fa-brands fa-steam"></i></span><span>Add to Steam</span>';
+                    btn.disabled = false;
+                    alert('Failed to add to Steam: ' + (data.error || 'Unknown error'));
+                }
+            })
+            .catch(error => {
+                console.error('Error adding to Steam:', error);
+                btn.innerHTML = '<span class="icon"><i class="fa-brands fa-steam"></i></span><span>Add to Steam</span>';
+                btn.disabled = false;
+                alert('Failed to add to Steam');
+            });
+        }
+
+        function deleteRom(romId, romName) {
+            if (!confirm(`Are you sure you want to delete "${romName}"?\n\nThis will remove the downloaded files from your device.`)) {
+                return;
+            }
+            
+            const btn = document.getElementById(`download-btn-${romId}`);
+            btn.disabled = true;
+            btn.innerHTML = '<span class="icon"><i class="fa-solid fa-spinner fa-spin"></i></span><span>Deleting...</span>';
+            
+            fetch(`/api/downloads/${romId}`, {
+                method: 'DELETE'
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    // Update local state
+                    downloadedRoms.delete(romId);
+                    
+                    // Reset button to download state
+                    btn.innerHTML = '<span class="icon"><i class="fa-solid fa-download"></i></span><span>Download</span>';
+                    btn.classList.remove('is-danger', 'is-success');
+                    btn.classList.add('is-primary');
+                    btn.disabled = false;
+                } else {
+                    btn.innerHTML = '<span class="icon"><i class="fa-solid fa-xmark"></i></span><span>Error</span>';
+                    btn.disabled = false;
+                    console.error('Delete failed:', data.error);
+                    alert(`Failed to delete: ${data.error}`);
+                }
+            })
+            .catch(error => {
+                btn.innerHTML = '<span class="icon"><i class="fa-solid fa-xmark"></i></span><span>Error</span>';
+                btn.disabled = false;
+                console.error('Delete error:', error);
+                alert('Failed to delete. Check console for details.');
+            });
+        }
+
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+    </script>
+
+    <style>
+        #roms-list .column {
+            display: flex;
+        }
+        
+        .rom-card {
+            display: block;
+            width: 100%;
+            border-radius: 8px;
+            overflow: hidden;
+            background: var(--theme-card-bg, #1a1a2e);
+            transition: transform 0.3s ease, box-shadow 0.3s ease;
+        }
+        
+        .rom-card:hover {
+            transform: translateY(-6px);
+            box-shadow: 0 8px 25px var(--theme-primary-glow, rgba(255, 107, 0, 0.4)), 0 4px 10px var(--theme-primary-glow, rgba(255, 107, 0, 0.2));
+        }
+        
+        .rom-card-image {
+            position: relative;
+            display: block;
+            width: 100%;
+            aspect-ratio: 3 / 4;
+            background: #111;
+            overflow: hidden;
+        }
+        
+        .rom-card-image .cover-img {
+            display: block;
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            object-position: center top;
+        }
+        
+        .rom-card-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: linear-gradient(transparent, rgba(0, 0, 0, 0.9));
+            padding: 2rem 0.5rem 0.5rem;
+        }
+        
+        .rom-title {
+            color: white;
+            font-size: 0.85rem;
+            font-weight: 600;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+            line-height: 1.3;
+        }
+        
+        .rom-card .download-btn {
+            border-radius: 0 0 8px 8px;
+            margin-top: auto;
+        }
+        
+        .rom-card .download-container {
+            width: 100%;
+        }
+        
+        .progress-wrapper {
+            padding: 0.5rem;
+            background: var(--theme-card-bg, #1a1a2e);
+            border-radius: 0 0 8px 8px;
+        }
+        
+        .progress-wrapper .progress {
+            margin-bottom: 0.25rem;
+            height: 0.75rem;
+            border-radius: 4px;
+        }
+        
+        .progress-wrapper .progress::-webkit-progress-bar {
+            background-color: #333;
+            border-radius: 4px;
+        }
+        
+        .progress-wrapper .progress::-webkit-progress-value {
+            background-color: var(--theme-primary, #FF6B00);
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+        
+        .progress-wrapper .progress.is-warning::-webkit-progress-value {
+            background-color: #ffdd57;
+        }
+        
+        .progress-text {
+            display: block;
+            font-size: 0.7rem;
+            color: #aaa;
+            text-align: center;
+        }
+        
+        /* Game Details Modal */
+        #game-details-modal .modal-card {
+            border-radius: 12px;
+            overflow: hidden;
+        }
+        
+        #game-details-modal .modal-card-head {
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        #game-details-modal .modal-card-foot {
+            border-top: 1px solid rgba(255,255,255,0.1);
+        }
+        
+        #game-details-modal .game-meta p {
+            color: var(--theme-text, #fff);
+            margin-top: 0.25rem;
+        }
+        
+        #game-details-modal #modal-cover {
+            box-shadow: 0 4px 15px rgba(0,0,0,0.3);
+        }
+        
+        .rom-card-image:hover .rom-card-overlay {
+            background: linear-gradient(transparent, rgba(0, 0, 0, 0.95));
+        }
+        
+        /* Add to Steam Modal */
+        .exe-list {
+            max-height: 300px;
+            overflow-y: auto;
+        }
+        
+        .exe-item {
+            display: flex;
+            align-items: center;
+            padding: 0.75rem;
+            margin-bottom: 0.5rem;
+            background: var(--theme-card-bg, #1a1a2e);
+            border-radius: 6px;
+            cursor: pointer;
+            border: 2px solid transparent;
+            transition: all 0.2s;
+        }
+        
+        .exe-item:hover {
+            border-color: var(--theme-primary-glow);
+        }
+        
+        .exe-item.selected {
+            border-color: var(--theme-primary);
+            background: rgba(255, 107, 0, 0.1);
+        }
+        
+        .exe-item input[type="radio"] {
+            display: none;
+        }
+        
+        .exe-icon {
+            color: var(--theme-primary);
+            margin-right: 0.75rem;
+            font-size: 1.25rem;
+        }
+        
+        .exe-name {
+            color: var(--theme-text);
+            font-size: 0.9rem;
+            word-break: break-all;
+        }
+    </style>
+{% endblock content %}
