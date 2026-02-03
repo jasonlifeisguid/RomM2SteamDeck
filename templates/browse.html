@@ -129,6 +129,7 @@
         const rommBaseUrl = {{ romm_base_url|tojson }};
         const DEFAULT_PLATFORM_ID = {{ default_platform_id|tojson }};
         const WINDOWS_PLATFORM_ID = 249;
+        const ENABLE_ADD_TO_STEAM = {{ enable_add_to_steam|default(false)|tojson }};
 
         // Check if we should load a specific platform directly from URL
         const urlPlatformId = {{ platform_id|tojson }};
@@ -420,11 +421,11 @@
                             btn.classList.add('is-danger');
                             btn.disabled = false;
                             
-                            // Check if this is a Windows game with exe files
-                            // Commented out due to removing all non-steam games from Steam
-                            //if (progress.exe_files && progress.exe_files.length > 0) {
-                            //    showAddToSteamModal(progress.exe_files, progress.rom_name || romName);
-                            //}
+                            // Optionally offer to add Windows games to Steam
+                            // (only when enabled via Settings, and only when exe files were found)
+                            if (ENABLE_ADD_TO_STEAM && progress.exe_files && progress.exe_files.length > 0) {
+                                showAddToSteamModal(progress.exe_files, progress.rom_name || romName);
+                            }
                         } else if (progress.status === 'error') {
                             eventSource.close();
                             downloadingRoms.delete(romId);

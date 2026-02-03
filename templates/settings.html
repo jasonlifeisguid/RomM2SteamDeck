@@ -340,7 +340,37 @@
                     </form>
                 </div>
             </div>
-                
+            
+            <!-- Add to Steam Integration -->
+            <div class="card has-background-dark mb-5">
+                <header class="card-header">
+                    <p class="card-header-title">Add to Steam (Experimental)</p>
+                </header>
+                <div class="card-content">
+                    <p class="mb-4 has-text-grey-light">
+                        When enabled, Windows downloads will scan for <code>.exe</code> files after extraction and
+                        offer to add them to Steam as non-Steam games. This feature touches Steam's
+                        <code>shortcuts.vdf</code> file and should be considered experimental.
+                    </p>
+                    <form method="post" action="{{ url_for('settings_add_to_steam') }}">
+                        <div class="field">
+                            <label class="checkbox">
+                                <input type="checkbox" name="enable_add_to_steam" {% if config.get('enable_add_to_steam', '0') == '1' %}checked{% endif %}>
+                                Enable Add to Steam integration and exe search (Windows games)
+                            </label>
+                            <p class="help is-danger mt-1">
+                                Recommended only if you have a backup of your Steam shortcuts.
+                            </p>
+                        </div>
+                        <div class="control">
+                            <button class="button is-primary" type="submit">
+                                Save Add to Steam Setting
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+            
             <!-- Windows Download Settings -->
             <div class="card has-background-dark mb-5">
                 <header class="card-header">

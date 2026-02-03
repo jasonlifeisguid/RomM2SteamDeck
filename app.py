@@ -154,7 +154,8 @@ def init_database():
         ('default_platform_id', '249'),  # Default to Windows
         ('windows_download_path', default_downloads),
         ('windows_install_path', default_install_path),
-        ('theme', 'oled-limited')  # Default theme
+        ('theme', 'oled-limited'),  # Default theme
+        ('enable_add_to_steam', '0')  # Disabled by default (experimental feature)
     ]
     
     for key, value in default_configs:
@@ -344,10 +345,21 @@ def browse():
         system_logger.info("RomM credentials missing; redirecting to Settings page")
         return redirect(url_for('settings'))
     
+    enable_add_to_steam = config_dict.get('enable_add_to_steam', '0') == '1'
+    
     romm_base = get_romm_base_url()
     default_platform = get_default_platform_id()
     theme = get_current_theme()
-    return render_template('browse.html', version="1.0.0", platform_id=None, platform_name=None, romm_base_url=romm_base, default_platform_id=default_platform, theme=theme)
+    return render_template(
+        'browse.html',
+        version="1.0.0",
+        platform_id=None,
+        platform_name=None,
+        romm_base_url=romm_base,
+        default_platform_id=default_platform,
+        theme=theme,
+        enable_add_to_steam=enable_add_to_steam
+    )
 
 @app.route('/platform/<int:platform_id>')
 def browse_platform(platform_id):
@@ -365,6 +377,8 @@ def browse_platform(platform_id):
         system_logger.info("RomM credentials missing; redirecting to Settings page")
         return redirect(url_for('settings'))
     
+    enable_add_to_steam = config_dict.get('enable_add_to_steam', '0') == '1'
+    
     romm_base = get_romm_base_url()
     default_platform = get_default_platform_id()
     theme = get_current_theme()
@@ -375,7 +389,17 @@ def browse_platform(platform_id):
         platform_name = result[0].get("romm_platform_name", f"Platform {platform_id}") if result else f"Platform {platform_id}"
     except:
         platform_name = f"Platform {platform_id}"
-    return render_template('browse.html', version="1.0.0", platform_id=platform_id, platform_name=platform_name, romm_base_url=romm_base, default_platform_id=default_platform, theme=theme)
+    return render_template(
+        'browse.html',
+        version="1.0.0",
+        platform_id=platform_id,
+        platform_name=platform_name,
+        romm_base_url=romm_base,
+        default_platform_id=default_platform,
+        theme=theme,
+        enable_add_to_steam=enable_add_to_steam
+    )
+
 
 # API: Get all platforms from RomM
 @app.route('/api/platforms')
@@ -928,6 +952,18 @@ def settings_theme():
     system_logger.info(f"Theme changed to: {theme_id}")
     return redirect(url_for('settings'))
 
+@app.route('/settings/add_to_steam', methods=['POST'])
+def settings_add_to_steam():
+    """Toggle the experimental Add to Steam / exe search integration."""
+    db = RomM2SteamDeckDatabase(get_db_path())
+    enabled = request.form.get("enable_add_to_steam") == "on"
+    db.execute_query(
+        "INSERT OR REPLACE INTO config (config_key, config_value) VALUES (?, ?)",
+        ("enable_add_to_steam", "1" if enabled else "0")
+    )
+    system_logger.info(f"Enable Add to Steam set to: {enabled}")
+    return redirect(url_for('settings'))
+
 # Update Platform Matching
 @app.route('/settings/platform_matching', methods=['POST'])
 def settings_platform_matching():    
@@ -1018,8 +1054,23 @@ def api_add_to_steam():
         system_logger.info(f"Shortcuts path: {shortcuts_path}")
         
         # Parse or create shortcuts.vdf
+        existing_file_size = os.path.getsize(shortcuts_path) if os.path.exists(shortcuts_path) else 0
         shortcuts = parse_shortcuts_vdf(shortcuts_path)
-        system_logger.info(f"Existing shortcuts count: {len(shortcuts)}")
+        system_logger.info(f"Existing shortcuts count: {len(shortcuts)} (file size: {existing_file_size} bytes)")
+
+        # Safety check: if the file exists and is non-empty but we could not
+        # parse any shortcuts, do NOT overwrite it. This avoids wiping all
+        # existing non-Steam games when our parser can't understand the format.
+        if existing_file_size > 0 and len(shortcuts) == 0:
+            system_logger.error(
+                "shortcuts.vdf appears to contain data but parser returned 0 entries; "
+                "refusing to modify file to avoid corrupting existing shortcuts."
+            )
+            return jsonify({
+                "success": False,
+                "error": "Could not safely read existing Steam shortcuts; "
+                         "Add to Steam has been aborted to avoid data loss."
+            }), 500
         
         # Generate unique app ID using CRC of exe path (consistent for same game)
         app_id = zlib.crc32(exe_path.encode()) & 0xffffffff
@@ -1172,10 +1223,26 @@ def parse_shortcuts_vdf(filepath):
     return shortcuts
 
 def write_shortcuts_vdf(filepath, shortcuts):
-    """Write Steam's shortcuts.vdf binary format."""
+    """Write Steam's shortcuts.vdf binary format.
+
+    This implementation is intentionally conservative: it creates a timestamped
+    backup of the existing file (if any) before writing, so users can recover
+    their non-Steam shortcuts if something goes wrong.
+    """
     # Ensure directory exists
-    os.makedirs(os.path.dirname(filepath), exist_ok=True)
-    
+    dirpath = os.path.dirname(filepath)
+    os.makedirs(dirpath, exist_ok=True)
+
+    # Create a backup of the existing file before overwriting
+    if os.path.exists(filepath):
+        try:
+            timestamp = time.strftime("%Y%m%d-%H%M%S")
+            backup_path = f"{filepath}.bak-{timestamp}"
+            shutil.copy2(filepath, backup_path)
+            system_logger.info(f"Created backup of shortcuts.vdf at: {backup_path}")
+        except Exception as e:
+            system_logger.error(f"Failed to create backup of shortcuts.vdf: {e}")
+
     data = bytearray()
     
     # Header
