@@ -1,5 +1,27 @@
 <!DOCTYPE html>
 <html lang="en" data-theme="{{ theme|default('oled-limited') }}">
+    <script>
+        var r2sd = document.documentElement;
+        function openFullscreen() {
+  if (r2sd.requestFullscreen) {
+    r2sd.requestFullscreen();
+  } else if (r2sd.webkitRequestFullscreen) { /* Safari */
+    r2sd.webkitRequestFullscreen();
+  } else if (r2sd.msRequestFullscreen) { /* IE11 */
+    r2sd.msRequestFullscreen();
+  }
+}
+/* Close fullscreen */
+function closeFullscreen() {
+  if (document.exitFullscreen) {
+    document.exitFullscreen();
+  } else if (document.webkitExitFullscreen) { /* Safari */
+    document.webkitExitFullscreen();
+  } else if (document.msExitFullscreen) { /* IE11 */
+    document.msExitFullscreen();
+  }
+}
+    </script>
 <head>
     <meta charset="UTF-8">    
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -294,6 +316,7 @@
             <a class="navbar-item settings-gear" href="/settings" title="Settings">
                 <span class="icon is-medium"><i class="fa-solid fa-gear fa-lg"></i></span>
             </a>
+
         </div>
     </nav>    
 

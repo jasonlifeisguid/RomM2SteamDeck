@@ -421,9 +421,10 @@
                             btn.disabled = false;
                             
                             // Check if this is a Windows game with exe files
-                            if (progress.exe_files && progress.exe_files.length > 0) {
-                                showAddToSteamModal(progress.exe_files, progress.rom_name || romName);
-                            }
+                            // Commented out due to removing all non-steam games from Steam
+                            //if (progress.exe_files && progress.exe_files.length > 0) {
+                            //    showAddToSteamModal(progress.exe_files, progress.rom_name || romName);
+                            //}
                         } else if (progress.status === 'error') {
                             eventSource.close();
                             downloadingRoms.delete(romId);

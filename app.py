@@ -12,11 +12,15 @@ import zipfile
 import subprocess
 import zlib
 import traceback
+import webbrowser
 
+
+# then make a url variable
+launch_url = "http://127.0.0.1:5001"
 # Global dictionary to track download progress
 download_progress = {}
 download_progress_lock = threading.Lock()
-
+webbrowser.open(launch_url)
 # Determine data directory - platform-specific locations
 def get_data_dir():
     """Get the data directory for config and database files."""
