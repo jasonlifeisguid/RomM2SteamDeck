@@ -332,6 +332,18 @@ def get_default_platform_id():
 @app.route('/')
 def browse():  
     system_logger.info("Browse Page")
+    
+    # Ensure RomM connection settings are configured; otherwise send user to Settings
+    db = RomM2SteamDeckDatabase(get_db_path())
+    config_rows = db.select_as_dict("config")
+    config_dict = {row['config_key']: row['config_value'] for row in config_rows}
+    romm_url = config_dict.get('romm_api_base_url', '').strip()
+    romm_user = config_dict.get('romm_username', '').strip()
+    romm_pass = config_dict.get('romm_password', '').strip()
+    if not romm_url or not romm_user or not romm_pass:
+        system_logger.info("RomM credentials missing; redirecting to Settings page")
+        return redirect(url_for('settings'))
+    
     romm_base = get_romm_base_url()
     default_platform = get_default_platform_id()
     theme = get_current_theme()
@@ -341,6 +353,18 @@ def browse():
 def browse_platform(platform_id):
     """Direct link to a specific platform's games."""
     system_logger.info(f"Browse Platform {platform_id}")
+    
+    # Ensure RomM connection settings are configured; otherwise send user to Settings
+    db = RomM2SteamDeckDatabase(get_db_path())
+    config_rows = db.select_as_dict("config")
+    config_dict = {row['config_key']: row['config_value'] for row in config_rows}
+    romm_url = config_dict.get('romm_api_base_url', '').strip()
+    romm_user = config_dict.get('romm_username', '').strip()
+    romm_pass = config_dict.get('romm_password', '').strip()
+    if not romm_url or not romm_user or not romm_pass:
+        system_logger.info("RomM credentials missing; redirecting to Settings page")
+        return redirect(url_for('settings'))
+    
     romm_base = get_romm_base_url()
     default_platform = get_default_platform_id()
     theme = get_current_theme()
@@ -1045,6 +1069,21 @@ def api_add_to_steam():
     except Exception as e:
         system_logger.error(f"Error adding to Steam: {e}")
         system_logger.error(traceback.format_exc())
+        return jsonify({"success": False, "error": str(e)}), 500
+
+@app.route('/shutdown', methods=['POST'])
+def shutdown():
+    """Shut down the Flask server (triggered from the browser)."""
+    try:
+        system_logger.info("Shutdown requested from browser")
+        shutdown_func = request.environ.get('werkzeug.server.shutdown')
+        if shutdown_func is None:
+            system_logger.error("Server shutdown not available (not running with Werkzeug server)")
+            return jsonify({"success": False, "error": "Server shutdown not available"}), 500
+        shutdown_func()
+        return jsonify({"success": True, "message": "Server shutting down"})
+    except Exception as e:
+        system_logger.error(f"Error during shutdown: {e}")
         return jsonify({"success": False, "error": str(e)}), 500
 
 def parse_shortcuts_vdf(filepath):

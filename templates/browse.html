@@ -746,6 +746,22 @@
     </script>
 
     <style>
+        /* Ensure the main browse area covers (almost) the full viewport height so
+           the loading panel uses the themed background instead of showing browser bg */
+        #roms-section {
+            min-height: calc(100vh - 3.25rem); /* account for navbar height */
+        }
+
+        /* Make the loading panel fill the available height and center its content */
+        #roms-loading {
+            min-height: calc(100vh - 3.25rem);
+            display: none; /* overridden to block in JS when loading */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+        }
+
         #roms-list .column {
             display: flex;
         }

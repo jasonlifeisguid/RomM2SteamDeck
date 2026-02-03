@@ -3,24 +3,52 @@
     <script>
         var r2sd = document.documentElement;
         function openFullscreen() {
-  if (r2sd.requestFullscreen) {
-    r2sd.requestFullscreen();
-  } else if (r2sd.webkitRequestFullscreen) { /* Safari */
-    r2sd.webkitRequestFullscreen();
-  } else if (r2sd.msRequestFullscreen) { /* IE11 */
-    r2sd.msRequestFullscreen();
-  }
-}
-/* Close fullscreen */
-function closeFullscreen() {
-  if (document.exitFullscreen) {
-    document.exitFullscreen();
-  } else if (document.webkitExitFullscreen) { /* Safari */
-    document.webkitExitFullscreen();
-  } else if (document.msExitFullscreen) { /* IE11 */
-    document.msExitFullscreen();
-  }
-}
+            if (r2sd.requestFullscreen) {
+                r2sd.requestFullscreen();
+            } else if (r2sd.webkitRequestFullscreen) { /* Safari */
+                r2sd.webkitRequestFullscreen();
+            } else if (r2sd.msRequestFullscreen) { /* IE11 */
+                r2sd.msRequestFullscreen();
+            }
+        }
+        /* Close fullscreen */
+        function closeFullscreen() {
+            if (document.exitFullscreen) {
+                document.exitFullscreen();
+            } else if (document.webkitExitFullscreen) { /* Safari */
+                document.webkitExitFullscreen();
+            } else if (document.msExitFullscreen) { /* IE11 */
+                document.msExitFullscreen();
+            }
+        }
+
+        function toggleFullscreen() {
+            const isFull =
+                document.fullscreenElement ||
+                document.webkitFullscreenElement ||
+                document.msFullscreenElement;
+            if (isFull) {
+                closeFullscreen();
+            } else {
+                openFullscreen();
+            }
+        }
+
+        async function shutdownApp() {
+            const confirmExit = confirm('Close RomM2SteamDeck and stop the server?');
+            if (!confirmExit) {
+                return;
+            }
+            try {
+                await fetch('/shutdown', { method: 'POST' });
+            } catch (e) {
+                console.error('Shutdown request failed', e);
+            }
+            // Best-effort attempt to close the browser window/tab.
+            // Some browsers may block this if the window was not opened by script.
+            window.open('', '_self');
+            window.close();
+        }
     </script>
 <head>
     <meta charset="UTF-8">    
@@ -184,6 +212,9 @@ function closeFullscreen() {
         .navbar {
             background-color: var(--theme-navbar-bg) !important;
             border-bottom: none;
+            position: sticky;
+            top: 0;
+            z-index: 1000;
         }
         
         .navbar-menu {
@@ -315,6 +346,16 @@ function closeFullscreen() {
             <!-- Settings gear - always visible, pushed to right -->
             <a class="navbar-item settings-gear" href="/settings" title="Settings">
                 <span class="icon is-medium"><i class="fa-solid fa-gear fa-lg"></i></span>
+            </a>
+
+            <!-- Fullscreen toggle -->
+            <a class="navbar-item" href="javascript:void(0)" onclick="toggleFullscreen()" title="Toggle fullscreen">
+                <span class="icon is-medium"><i class="fa-solid fa-expand fa-lg"></i></span>
+            </a>
+
+            <!-- Exit application button -->
+            <a class="navbar-item" href="javascript:void(0)" onclick="shutdownApp()" title="Exit application">
+                <span class="icon is-medium"><i class="fa-solid fa-power-off fa-lg"></i></span>
             </a>
 
         </div>
