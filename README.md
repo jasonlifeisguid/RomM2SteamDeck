@@ -211,6 +211,7 @@ systemctl --user start romm2steamdeck.service
 **Windows:**
 - Use NSSM (recommended) or pywin32 service wrapper
 - See `deployment/README.md` for detailed instructions
+- **Alternative:** Simply run `RomM2SteamDeck.exe` directly — it will automatically open your system's default browser to the app
 
 **macOS:**
 ```bash
@@ -220,10 +221,27 @@ launchctl load ~/Library/LaunchAgents/com.romm2steamdeck.plist
 
 ### Steam Deck Game Mode
 
+**Option 1: Using the systemd service**
 1. Set up the systemd service in Desktop Mode (see above)
 2. Add your browser to Steam as a non-Steam game
 3. Set browser launch options to: `http://localhost:5001`
 4. Launch from Game Mode - the service runs in the background
+
+**Option 2: Run the AppImage directly in Game Mode**
+
+AppImages don't run in Game Mode by default — you need [AppImageLauncher Lite](https://github.com/TheAssassin/AppImageLauncher) to make them compatible:
+
+1. In Desktop Mode, download **AppImageLauncher Lite** from [GitHub](https://github.com/TheAssassin/AppImageLauncher)
+2. Open Konsole and install it:
+   ```bash
+   chmod +x appimagelauncher-lite-*.AppImage
+   ./appimagelauncher-lite-*.AppImage install
+   ```
+3. Move `RomM2SteamDeck-x86_64.AppImage` into your `~/Applications` folder (create it if it doesn't exist) — AppImageLauncher will automatically convert it
+4. In Steam (Desktop Mode), go to **Library → Add a Game → Add a Non-Steam Game** and select the converted AppImage from the Applications folder
+5. Switch to Game Mode — the app will now be available under your non-Steam games
+
+For more details, see [How to Install AppImages on Steam Deck for Game Mode](https://www.gamesinhand.com/post/how-to-install-appimages-on-steam-deck-for-game-mode)
 
 For detailed deployment instructions, see [`deployment/README.md`](deployment/README.md).
 
