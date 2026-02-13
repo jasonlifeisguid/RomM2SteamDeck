@@ -66,12 +66,12 @@ Requirements: A Linux x86_64 system with Python 3.8+ and pip
 #### Option 2: Build Standalone Executable
 
 1. Install Python 3.8+ and clone the repository
-2. Run the build script:
+2. Build a single-file executable:
    ```cmd
    pip install pyinstaller
-   pyinstaller --onedir --name RomM2SteamDeck --add-data "templates;templates" --add-data "config.json;." app.py
+   pyinstaller --onefile --name RomM2SteamDeck --add-data "templates;templates" --add-data "config.json;." app.py
    ```
-3. The executable will be in the `dist/RomM2SteamDeck` folder
+3. The standalone `RomM2SteamDeck.exe` will be in the `dist` folder — no additional files or folders needed
 
 ### macOS
 
@@ -189,6 +189,43 @@ python app.py
 ```
 
 The app will run on `http://localhost:5001` by default.
+
+## Running as a Service
+
+RomM2SteamDeck can be run as a background service on all supported platforms, allowing it to start automatically and run continuously.
+
+### Quick Start
+
+**Linux / Steam Deck:**
+```bash
+# Copy service file
+mkdir -p ~/.config/systemd/user
+cp deployment/romm2steamdeck.service ~/.config/systemd/user/
+
+# Edit paths in service file, then:
+systemctl --user daemon-reload
+systemctl --user enable romm2steamdeck.service
+systemctl --user start romm2steamdeck.service
+```
+
+**Windows:**
+- Use NSSM (recommended) or pywin32 service wrapper
+- See `deployment/README.md` for detailed instructions
+
+**macOS:**
+```bash
+cp deployment/com.romm2steamdeck.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.romm2steamdeck.plist
+```
+
+### Steam Deck Game Mode
+
+1. Set up the systemd service in Desktop Mode (see above)
+2. Add your browser to Steam as a non-Steam game
+3. Set browser launch options to: `http://localhost:5001`
+4. Launch from Game Mode - the service runs in the background
+
+For detailed deployment instructions, see [`deployment/README.md`](deployment/README.md).
 
 ## API Endpoints
 

@@ -24,15 +24,6 @@ class RomM2SteamDeckDatabase:
         except sqlite3.Error as e:
             logger.error(f"SQLite Error: (0) {e}")
     
-    def insert(self, table: str, columns: List[str], values: Tuple) -> None:
-        """
-        Executes an INSERT into the database.
-        """
-        cols = ', '.join(columns)
-        placeholders = ', '.join(['?' for _ in columns])
-        query = f"INSERT INTO {table} ({cols}) VALUES ({placeholders})"
-        self.execute_query(query, values)
-    
     def update(self, table: str, updates: dict, condition: str, condition_values: Tuple) -> None:
         """
         Executes an UPDATE in the database.
@@ -42,28 +33,7 @@ class RomM2SteamDeckDatabase:
         values = tuple(updates.values()) + condition_values
         self.execute_query(query, values)
     
-    def fetch_query(self, query: str, params: Tuple = ()) -> List[Tuple]:
-        """
-        Executes a SELECT query and returns the results.
-        """
-        try:
-            self.cursor.execute(query, params)
-            return self.cursor.fetchall()
-        except sqlite3.Error as e:
-            logger.error(f"SQLite Error: (1) {e}")
-            return []
-        
-    def select(self, table: str, columns: List[str] = ['*'], condition: str = '', condition_values: Tuple = ()) -> List[Tuple]:
-        """
-        Executes a SELECT in the database and returns the results.
-        """
-        cols = ', '.join(columns)
-        query = f"SELECT {cols} FROM {table}"
-        if condition:
-            query += f" WHERE {condition}"
-        return self.fetch_query(query, condition_values)
-    
-    def select_as_dict(self, table: str, columns: List[str] = ['*'], condition: str = '', condition_values: Tuple = ()) -> List[dict]:
+    def select_as_dict(self, table: str, columns: List[str] = ['*'], condition: str = '', condition_values: Tuple = (), order_by: str = '') -> List[dict]:
         """
         Executes a SELECT in the database and returns the results as a list of dictionaries.
         """
@@ -71,6 +41,8 @@ class RomM2SteamDeckDatabase:
         query = f"SELECT {cols} FROM {table}"
         if condition:
             query += f" WHERE {condition}"
+        if order_by:
+            query += f" ORDER BY {order_by}"
 
         try:
             self.cursor.execute(query, condition_values)

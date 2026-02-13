@@ -151,9 +151,9 @@ class RommAPIHelper:
             logger.error(f"Get ROMs for platform {platform_id} error: {response.status_code} {response.text}")
             return []         
 
-    def downloadRom(self, romID, romFilename, download_path, progress_callback=None):
-        # Prepare URL
-        url = self.api_base_url + '/roms/' + str(romID) + '/content/' + str(romFilename)
+    def downloadRom(self, romID, romFilename, download_path, progress_callback=None, cancel_event=None):
+        # Prepare URL — encode filename so brackets, parens, etc. don't cause 404
+        url = self.api_base_url + '/roms/' + str(romID) + '/content/' + urllib.parse.quote(str(romFilename), safe='')
 
         # Prepare Headers
         headers = {
@@ -161,6 +161,8 @@ class RommAPIHelper:
             "Content-Type": "application/x-www-form-urlencoded",
             "Authorization": f"Basic {self.auth_encoded}"
         }  
+
+        logger.info(f"Downloading ROM {romID}: {url}")
 
         # Do HTTP GET Request with streaming
         response = requests.get(url, headers=headers, stream=True)
@@ -183,27 +185,42 @@ class RommAPIHelper:
             # build file-path
             file_path = os.path.join(download_path, filename)
 
-            # Check if File exists
+            # Check if File exists and is complete
             if os.path.exists(file_path):
-                logger.info(f"File already exists: {file_path} - Download skipped.")
-                return {"skipped": True, "path": file_path, "filename": filename}
-            else:
-                # Download File in Chunks and save it
-                downloaded = 0
-                chunk_size = 1024 * 1024  # 1MB chunks for better progress updates
-                
-                with open(file_path, "wb") as file:
-                    for chunk in response.iter_content(chunk_size=chunk_size):
-                        if chunk:
-                            file.write(chunk)
-                            downloaded += len(chunk)
-                            
-                            # Call progress callback if provided
-                            if progress_callback and total_size > 0:
-                                progress = int((downloaded / total_size) * 100)
-                                progress_callback(downloaded, total_size, progress)
-                
-                return {"skipped": False, "path": file_path, "filename": filename}
+                existing_size = os.path.getsize(file_path)
+                if total_size > 0 and existing_size == total_size:
+                    logger.info(f"File already exists and is complete: {file_path} - Download skipped.")
+                    return {"skipped": True, "path": file_path, "filename": filename}
+                else:
+                    # Partial file - remove it and re-download
+                    logger.info(f"Removing partial file ({existing_size}/{total_size} bytes): {file_path}")
+                    os.remove(file_path)
+
+            # Download File in Chunks and save it
+            downloaded = 0
+            chunk_size = 1024 * 1024  # 1MB chunks for better progress updates
+
+            with open(file_path, "wb") as file:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    # Check for cancellation before each chunk
+                    if cancel_event and cancel_event.is_set():
+                        response.close()
+                        logger.info(f"Download cancelled for ROM {romID}")
+                        # Remove the partial file
+                        file.close()
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        return {"cancelled": True}
+                    if chunk:
+                        file.write(chunk)
+                        downloaded += len(chunk)
+
+                        # Call progress callback if provided
+                        if progress_callback and total_size > 0:
+                            progress = int((downloaded / total_size) * 100)
+                            progress_callback(downloaded, total_size, progress)
+
+            return {"skipped": False, "path": file_path, "filename": filename}
         else:
             # Something went wrong
             logger.error(f"Download error for ROM {romID}: {response.status_code} {response.text}")

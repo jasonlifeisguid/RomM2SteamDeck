@@ -37,6 +37,10 @@ build/
 *.AppDir/
 build_venv/
 appimagetool-x86_64.AppImage
+*.zip
+
+# Claude Code session data
+.claude/
 
 # OS files
 .DS_Store

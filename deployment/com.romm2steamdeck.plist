@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.romm2steamdeck</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/bin/python3</string>
+        <!-- Adjust path to your app.py location -->
+        <string>/path/to/RomM2SteamDeck/app.py</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>~/Library/Application Support/romm2steamdeck</string>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <dict>
+        <key>SuccessfulExit</key>
+        <false/>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>~/Library/Logs/romm2steamdeck/stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>~/Library/Logs/romm2steamdeck/stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+</dict>
+</plist>

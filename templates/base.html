@@ -34,21 +34,23 @@
             }
         }
 
-        async function shutdownApp() {
-            const confirmExit = confirm('Close RomM2SteamDeck and stop the server?');
-            if (!confirmExit) {
-                return;
-            }
-            try {
-                await fetch('/shutdown', { method: 'POST' });
-            } catch (e) {
-                console.error('Shutdown request failed', e);
-            }
-            // Best-effort attempt to close the browser window/tab.
-            // Some browsers may block this if the window was not opened by script.
-            window.open('', '_self');
-            window.close();
-        }
+        // Shutdown functionality disabled - causes issues with terminal/browser windows
+        // For service deployments, use proper service management tools instead
+        // async function shutdownApp() {
+        //     const confirmExit = confirm('Close RomM2SteamDeck and stop the server?');
+        //     if (!confirmExit) {
+        //         return;
+        //     }
+        //     try {
+        //         await fetch('/shutdown', { method: 'POST' });
+        //     } catch (e) {
+        //         console.error('Shutdown request failed', e);
+        //     }
+        //     // Best-effort attempt to close the browser window/tab.
+        //     // Some browsers may block this if the window was not opened by script.
+        //     window.open('', '_self');
+        //     window.close();
+        // }
     </script>
 <head>
     <meta charset="UTF-8">    
@@ -327,6 +329,175 @@
         .collapse {
             display: none;
         }
+
+        /* Toast notification system */
+        .toast-container {
+            position: fixed;
+            top: 4.5rem;
+            right: 1rem;
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+            pointer-events: none;
+        }
+
+        .toast {
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            background: var(--theme-card-bg, #1a1a2e);
+            color: var(--theme-text, #fff);
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            animation: toastSlideIn 0.3s ease-out;
+            max-width: 320px;
+            pointer-events: auto;
+        }
+
+        .toast.is-success { border-left: 4px solid #48c78e; }
+        .toast.is-warning { border-left: 4px solid #ffe08a; }
+        .toast.is-danger { border-left: 4px solid #f14668; }
+        .toast.is-info { border-left: 4px solid var(--theme-primary); }
+
+        @keyframes toastSlideIn {
+            from { transform: translateX(100%); opacity: 0; }
+            to { transform: translateX(0); opacity: 1; }
+        }
+
+        /* Theme drawer */
+        .theme-drawer {
+            position: fixed;
+            top: 0;
+            right: -320px;
+            width: 320px;
+            height: 100vh;
+            background: var(--theme-card-bg, #1a1a2e);
+            box-shadow: -4px 0 20px rgba(0, 0, 0, 0.5);
+            z-index: 1001;
+            transition: right 0.3s ease;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .theme-drawer.is-open {
+            right: 0;
+        }
+
+        .theme-drawer-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.5);
+            z-index: 1000;
+            opacity: 0;
+            visibility: hidden;
+            transition: opacity 0.3s ease;
+        }
+
+        .theme-drawer-overlay.is-open {
+            opacity: 1;
+            visibility: visible;
+        }
+
+        .theme-drawer-header {
+            padding: 1rem;
+            border-bottom: 1px solid rgba(255,255,255,0.1);
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .theme-drawer-content {
+            padding: 1rem;
+            overflow-y: auto;
+            flex: 1;
+        }
+
+        .theme-drawer .theme-grid {
+            display: grid;
+            grid-template-columns: repeat(2, 1fr);
+            gap: 0.75rem;
+        }
+
+        .theme-option {
+            position: relative;
+            cursor: pointer;
+            border-radius: 8px;
+            overflow: hidden;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .theme-option:hover {
+            transform: translateY(-2px);
+        }
+
+        .theme-option.selected {
+            box-shadow: 0 0 0 3px var(--theme-primary);
+        }
+
+        .theme-preview {
+            height: 60px;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .theme-preview-navbar {
+            height: 20px;
+            display: flex;
+            align-items: center;
+            padding: 0 6px;
+        }
+
+        .theme-preview-navbar span {
+            font-size: 8px;
+            font-weight: bold;
+        }
+
+        .theme-preview-body {
+            flex: 1;
+            padding: 6px;
+            display: flex;
+            gap: 3px;
+        }
+
+        .theme-preview-card {
+            width: 16px;
+            height: 100%;
+            border-radius: 2px;
+        }
+
+        .theme-label {
+            padding: 0.4rem;
+            text-align: center;
+            font-size: 0.75rem;
+            font-weight: 500;
+            background: rgba(0,0,0,0.3);
+            color: #fff;
+        }
+
+        .theme-check {
+            position: absolute;
+            top: 4px;
+            right: 4px;
+            background: var(--theme-primary);
+            color: white;
+            border-radius: 50%;
+            width: 18px;
+            height: 18px;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            font-size: 9px;
+        }
+
+        .theme-option.selected .theme-check {
+            display: flex;
+        }
+
     </style>
 </head>
 <body>        
@@ -348,18 +519,149 @@
                 <span class="icon is-medium"><i class="fa-solid fa-gear fa-lg"></i></span>
             </a>
 
+            <!-- Theme selector -->
+            <a class="navbar-item" href="javascript:void(0)" onclick="toggleThemeDrawer()" title="Theme">
+                <span class="icon is-medium"><i class="fa-solid fa-palette fa-lg"></i></span>
+            </a>
+
             <!-- Fullscreen toggle -->
             <a class="navbar-item" href="javascript:void(0)" onclick="toggleFullscreen()" title="Toggle fullscreen">
                 <span class="icon is-medium"><i class="fa-solid fa-expand fa-lg"></i></span>
             </a>
 
-            <!-- Exit application button -->
-            <a class="navbar-item" href="javascript:void(0)" onclick="shutdownApp()" title="Exit application">
+            <!-- Exit application button disabled - use service management tools instead -->
+            <!-- <a class="navbar-item" href="javascript:void(0)" onclick="shutdownApp()" title="Exit application">
                 <span class="icon is-medium"><i class="fa-solid fa-power-off fa-lg"></i></span>
-            </a>
+            </a> -->
 
         </div>
-    </nav>    
+    </nav>
+
+    <!-- Toast notifications container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Theme drawer -->
+    <div id="theme-drawer" class="theme-drawer">
+        <div class="theme-drawer-header">
+            <span class="title is-5" style="color: var(--theme-text);">Theme</span>
+            <button class="delete" onclick="toggleThemeDrawer()"></button>
+        </div>
+        <div class="theme-drawer-content">
+            <div class="theme-grid">
+                <div class="theme-option {{ 'selected' if theme == 'oled-limited' else '' }}" data-theme="oled-limited" onclick="selectTheme('oled-limited')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #FF6B00;"><span style="color: #fff;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #0a0a0a;">
+                            <div class="theme-preview-card" style="background: #1a1a2e;"></div>
+                            <div class="theme-preview-card" style="background: #1a1a2e;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">OLED Limited</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'oled-black' else '' }}" data-theme="oled-black" onclick="selectTheme('oled-black')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #000000;"><span style="color: #fff;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #000000;">
+                            <div class="theme-preview-card" style="background: #111111;"></div>
+                            <div class="theme-preview-card" style="background: #111111;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">OLED Black</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'classic-white' else '' }}" data-theme="classic-white" onclick="selectTheme('classic-white')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #ffffff;"><span style="color: #333;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #f5f5f5;">
+                            <div class="theme-preview-card" style="background: #ffffff;"></div>
+                            <div class="theme-preview-card" style="background: #ffffff;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">Classic White</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'monochrome' else '' }}" data-theme="monochrome" onclick="selectTheme('monochrome')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #222222;"><span style="color: #fff;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #111111;">
+                            <div class="theme-preview-card" style="background: #1a1a1a;"></div>
+                            <div class="theme-preview-card" style="background: #1a1a1a;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">Monochrome</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'steam-blue' else '' }}" data-theme="steam-blue" onclick="selectTheme('steam-blue')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #171a21;"><span style="color: #c7d5e0;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #1b2838;">
+                            <div class="theme-preview-card" style="background: #2a475e;"></div>
+                            <div class="theme-preview-card" style="background: #2a475e;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">Steam Blue</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'purple-haze' else '' }}" data-theme="purple-haze" onclick="selectTheme('purple-haze')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #5a189a;"><span style="color: #fff;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #10002b;">
+                            <div class="theme-preview-card" style="background: #240046;"></div>
+                            <div class="theme-preview-card" style="background: #240046;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">Purple Haze</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'matrix-green' else '' }}" data-theme="matrix-green" onclick="selectTheme('matrix-green')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #001a00;"><span style="color: #00ff41;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #000d00;">
+                            <div class="theme-preview-card" style="background: #001a00;"></div>
+                            <div class="theme-preview-card" style="background: #001a00;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">Matrix Green</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'crimson-red' else '' }}" data-theme="crimson-red" onclick="selectTheme('crimson-red')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #7f1d1d;"><span style="color: #fff;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #1c1917;">
+                            <div class="theme-preview-card" style="background: #292524;"></div>
+                            <div class="theme-preview-card" style="background: #292524;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">Crimson Red</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'ocean-teal' else '' }}" data-theme="ocean-teal" onclick="selectTheme('ocean-teal')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #134e4a;"><span style="color: #fff;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #042f2e;">
+                            <div class="theme-preview-card" style="background: #115e59;"></div>
+                            <div class="theme-preview-card" style="background: #115e59;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">Ocean Teal</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+                <div class="theme-option {{ 'selected' if theme == 'sunset-gold' else '' }}" data-theme="sunset-gold" onclick="selectTheme('sunset-gold')">
+                    <div class="theme-preview">
+                        <div class="theme-preview-navbar" style="background: #78350f;"><span style="color: #fff;">R2SD</span></div>
+                        <div class="theme-preview-body" style="background: #1c1917;">
+                            <div class="theme-preview-card" style="background: #292524;"></div>
+                            <div class="theme-preview-card" style="background: #292524;"></div>
+                        </div>
+                    </div>
+                    <div class="theme-label">Sunset Gold</div>
+                    <span class="theme-check"><i class="fa-solid fa-check"></i></span>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div id="theme-drawer-overlay" class="theme-drawer-overlay" onclick="toggleThemeDrawer()"></div>
 
     <!-- Main Content -->
     <section class="section" style="padding: 1rem;">
@@ -367,6 +669,85 @@
             {% block content %}
             {% endblock content %}
         <!-- </div> -->
-    </section>    
+    </section>
+
+    <script>
+        // Toast notification system
+        function showToast(message, type = 'info', duration = 4000) {
+            let container = document.getElementById('toast-container');
+            if (!container) {
+                container = document.createElement('div');
+                container.id = 'toast-container';
+                container.className = 'toast-container';
+                document.body.appendChild(container);
+            }
+
+            const icons = {
+                success: 'fa-check-circle',
+                warning: 'fa-exclamation-triangle',
+                danger: 'fa-times-circle',
+                info: 'fa-info-circle'
+            };
+
+            const toast = document.createElement('div');
+            toast.className = `toast is-${type}`;
+            toast.innerHTML = `
+                <span class="icon"><i class="fa-solid ${icons[type] || icons.info}"></i></span>
+                <span>${message}</span>
+            `;
+
+            container.appendChild(toast);
+
+            if (duration > 0) {
+                setTimeout(() => {
+                    toast.style.animation = 'toastSlideIn 0.3s ease-out reverse';
+                    setTimeout(() => toast.remove(), 300);
+                }, duration);
+            }
+        }
+
+        // Theme drawer functions
+        function toggleThemeDrawer() {
+            document.getElementById('theme-drawer').classList.toggle('is-open');
+            document.getElementById('theme-drawer-overlay').classList.toggle('is-open');
+        }
+
+        function selectTheme(themeId) {
+            // Update UI
+            document.querySelectorAll('.theme-option').forEach(opt => {
+                opt.classList.toggle('selected', opt.dataset.theme === themeId);
+            });
+
+            // Apply theme immediately
+            document.documentElement.setAttribute('data-theme', themeId);
+
+            // Save to server
+            fetch('/settings/theme', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'theme=' + themeId
+            }).then(() => {
+                showToast('Theme updated', 'success', 2000);
+            }).catch(() => {
+                showToast('Failed to save theme', 'danger');
+            });
+        }
+
+        // Close drawer on Escape key
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape') {
+                const themeDrawer = document.getElementById('theme-drawer');
+                const themeOverlay = document.getElementById('theme-drawer-overlay');
+                if (themeDrawer) themeDrawer.classList.remove('is-open');
+                if (themeOverlay) themeOverlay.classList.remove('is-open');
+
+                const queueDrawer = document.getElementById('queue-drawer');
+                const queueOverlay = document.getElementById('queue-drawer-overlay');
+                if (queueDrawer) queueDrawer.classList.remove('is-open');
+                if (queueOverlay) queueOverlay.classList.remove('is-open');
+            }
+        });
+
+    </script>
 </body>
 </html>

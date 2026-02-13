@@ -36,79 +36,56 @@
         .modal-card-title {
             color: #fff;
         }
-        
-        /* Theme selector styles */
-        .theme-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-            gap: 1rem;
+        /* Keep checkbox fields inside card content (avoid floating outside card) */
+        .card-content .field .checkbox {
+            padding-left: 45px;
         }
-        .theme-option {
-            position: relative;
+        .card-content .field .checkbox input[type="checkbox"] {
+            margin-right: 0.5rem;
+            vertical-align: middle;
+        }
+
+        /* Collapsible sections */
+        .card-header.is-collapsible {
             cursor: pointer;
-            border-radius: 8px;
+            user-select: none;
+        }
+
+        .card-header .collapse-icon {
+            margin-left: auto;
+            margin-right: 1rem;
+            transition: transform 0.3s ease;
+            color: var(--theme-primary);
+        }
+
+        .card-header.is-collapsed .collapse-icon {
+            transform: rotate(-90deg);
+        }
+
+        .card-content.is-collapsible {
             overflow: hidden;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: max-height 0.3s ease, padding 0.3s ease;
+            max-height: 2000px;
         }
-        .theme-option:hover {
-            transform: translateY(-2px);
+
+        .card-content.is-collapsed {
+            max-height: 0 !important;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
         }
-        .theme-option.selected {
-            box-shadow: 0 0 0 3px var(--theme-primary);
+
+        .config-status {
+            font-size: 0.75rem;
+            color: #48c78e;
+            margin-left: 0.5rem;
+            font-weight: normal;
         }
-        .theme-option input[type="radio"] {
-            position: absolute;
-            opacity: 0;
-        }
-        .theme-preview {
-            height: 80px;
-            display: flex;
-            flex-direction: column;
-        }
-        .theme-preview-navbar {
-            height: 30px;
-            display: flex;
-            align-items: center;
-            padding: 0 8px;
-        }
-        .theme-preview-navbar span {
-            font-size: 10px;
-            font-weight: bold;
-        }
-        .theme-preview-body {
-            flex: 1;
-            padding: 8px;
-            display: flex;
-            gap: 4px;
-        }
-        .theme-preview-card {
-            width: 20px;
-            height: 100%;
-            border-radius: 2px;
-        }
-        .theme-label {
-            padding: 0.5rem;
-            text-align: center;
-            font-size: 0.85rem;
-            font-weight: 500;
-            background: rgba(0,0,0,0.3);
-        }
-        .theme-check {
-            position: absolute;
-            top: 4px;
-            right: 4px;
-            background: var(--theme-primary);
-            color: white;
-            border-radius: 50%;
-            width: 20px;
-            height: 20px;
-            display: none;
-            align-items: center;
-            justify-content: center;
-            font-size: 10px;
-        }
-        .theme-option.selected .theme-check {
-            display: flex;
+
+        /* Disabled input styling for auto-extract platforms */
+        input.is-disabled {
+            background-color: rgba(0, 0, 0, 0.3) !important;
+            cursor: not-allowed;
+            color: #888 !important;
         }
     </style>
     
@@ -131,12 +108,203 @@
             loadFolders(currentPath);
         }
 
-        function openWindowsInstallBrowser() {
-            targetInputId = 'windows_install_path';
-            const currentPath = document.getElementById('windows_install_path').value || '~';
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        function toggleCard(header) {
+            header.classList.toggle('is-collapsed');
+            header.nextElementSibling.classList.toggle('is-collapsed');
+        }
+
+        // Per-platform install paths data (stored as JSON string in database)
+        let platformInstallPaths = {};
+        {% for platform in platform_matching %}
+        (function() {
+            let rawPaths = {{ platform.install_paths | default('[]') | tojson }};
+            // Parse JSON string from database
+            if (typeof rawPaths === 'string') {
+                try {
+                    platformInstallPaths[{{ platform.romm_platform_id }}] = JSON.parse(rawPaths);
+                } catch (e) {
+                    platformInstallPaths[{{ platform.romm_platform_id }}] = [];
+                }
+            } else if (Array.isArray(rawPaths)) {
+                platformInstallPaths[{{ platform.romm_platform_id }}] = rawPaths;
+            } else {
+                platformInstallPaths[{{ platform.romm_platform_id }}] = [];
+            }
+        })();
+        {% endfor %}
+
+        function toggleInstallPaths(platformId, enabled) {
+            const row = document.getElementById('install-paths-row-' + platformId);
+            const platformRow = document.getElementById('platform-row-' + platformId);
+
+            // Get ROM folder input and Save button
+            const romFolderInput = platformRow?.querySelector('input[name="steamdeck_platform_name"]');
+            const saveButton = platformRow?.querySelector('button[type="submit"]');
+
+            if (row) {
+                row.style.display = enabled ? '' : 'none';
+                if (enabled) {
+                    // Move ROM folder value to first install path if paths are empty
+                    if (romFolderInput && romFolderInput.value.trim()) {
+                        let paths = platformInstallPaths[platformId] || [];
+                        if (paths.length === 0 || (paths.length === 1 && paths[0] === '')) {
+                            platformInstallPaths[platformId] = [romFolderInput.value.trim()];
+                        }
+                        // Clear the ROM folder input
+                        romFolderInput.value = '';
+                    }
+                    renderPlatformInstallPaths(platformId);
+                }
+            }
+
+            // Disable/enable ROM folder input and Save button
+            if (romFolderInput) {
+                romFolderInput.disabled = enabled;
+                romFolderInput.classList.toggle('is-disabled', enabled);
+                if (enabled) {
+                    romFolderInput.placeholder = 'Disabled - using install paths below';
+                } else {
+                    romFolderInput.placeholder = 'full-path';
+                }
+            }
+            if (saveButton) {
+                saveButton.disabled = enabled;
+                saveButton.classList.toggle('is-hidden', enabled);
+            }
+        }
+
+        function renderPlatformInstallPaths(platformId) {
+            const container = document.getElementById('platform-install-paths-' + platformId);
+            if (!container) return;
+
+            let paths = platformInstallPaths[platformId] || [];
+            if (paths.length === 0) paths = [''];
+
+            container.innerHTML = paths.map((path, index) => `
+                <div class="field has-addons mb-2">
+                    <div class="control is-expanded">
+                        <input class="input is-small" type="text"
+                               id="platform-${platformId}-path-${index}"
+                               placeholder="/home/deck/Games/PlatformName"
+                               value="${escapeHtml(path)}">
+                    </div>
+                    <div class="control">
+                        <button class="button is-info is-small" type="button" onclick="openPlatformInstallPathBrowser(${platformId}, ${index})">
+                            <span class="icon"><i class="fa-solid fa-folder-open"></i></span>
+                        </button>
+                    </div>
+                    ${paths.length > 1 ? `<div class="control">
+                        <button class="button is-danger is-small" type="button" onclick="removePlatformInstallPath(${platformId}, ${index})" title="Remove">
+                            <span class="icon"><i class="fa-solid fa-trash"></i></span>
+                        </button>
+                    </div>` : ''}
+                </div>
+            `).join('');
+        }
+
+        function syncPlatformInstallPaths(platformId) {
+            const inputs = document.querySelectorAll(`[id^="platform-${platformId}-path-"]`);
+            platformInstallPaths[platformId] = Array.from(inputs).map(el => el.value).filter(v => v.trim());
+        }
+
+        function addPlatformInstallPath(platformId) {
+            syncPlatformInstallPaths(platformId);
+            platformInstallPaths[platformId] = platformInstallPaths[platformId] || [];
+            platformInstallPaths[platformId].push('');
+            renderPlatformInstallPaths(platformId);
+        }
+
+        function removePlatformInstallPath(platformId, index) {
+            syncPlatformInstallPaths(platformId);
+            platformInstallPaths[platformId].splice(index, 1);
+            if (platformInstallPaths[platformId].length === 0) platformInstallPaths[platformId] = [''];
+            renderPlatformInstallPaths(platformId);
+        }
+
+        function openPlatformInstallPathBrowser(platformId, index) {
+            targetInputId = `platform-${platformId}-path-${index}`;
+            const input = document.getElementById(targetInputId);
+            const currentPath = input ? input.value || '~' : '~';
             document.getElementById('folder-modal').classList.add('is-active');
             loadFolders(currentPath);
         }
+
+        function savePlatformInstallPaths(platformId) {
+            syncPlatformInstallPaths(platformId);
+            const paths = platformInstallPaths[platformId] || [];
+
+            // Also get the auto_extract checkbox state
+            const platformRow = document.getElementById('platform-row-' + platformId);
+            const autoExtractCheckbox = platformRow?.querySelector('input[name="auto_extract"]');
+            const autoExtract = autoExtractCheckbox ? autoExtractCheckbox.checked : false;
+
+            fetch(`/api/platform/${platformId}/config`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ install_paths: paths, auto_extract: autoExtract })
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    showToast('Settings saved', 'success');
+                } else {
+                    showToast(data.error || 'Failed to save settings', 'danger');
+                }
+            })
+            .catch(error => {
+                console.error('Error saving platform settings:', error);
+                showToast('Failed to save settings', 'danger');
+            });
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Initialize platform install paths and disable inputs for platforms with auto_extract enabled
+            {% for platform in platform_matching %}
+            {% if platform.auto_extract %}
+            (function() {
+                const platformId = {{ platform.romm_platform_id }};
+                const platformRow = document.getElementById('platform-row-' + platformId);
+                const romFolderInput = platformRow?.querySelector('input[name="steamdeck_platform_name"]');
+                const saveButton = platformRow?.querySelector('button[type="submit"]');
+
+                if (romFolderInput) {
+                    romFolderInput.disabled = true;
+                    romFolderInput.classList.add('is-disabled');
+                    romFolderInput.placeholder = 'Disabled - using install paths below';
+                }
+                if (saveButton) {
+                    saveButton.disabled = true;
+                    saveButton.classList.add('is-hidden');
+                }
+
+                renderPlatformInstallPaths(platformId);
+            })();
+            {% endif %}
+            {% endfor %}
+
+            // Collapse configured sections on page load
+            {% if config.get('romm_api_base_url', '') %}
+            document.getElementById('api-header')?.classList.add('is-collapsed');
+            document.getElementById('api-content')?.classList.add('is-collapsed');
+            {% endif %}
+
+            {% if config.get('default_platform_id', '') %}
+            document.getElementById('platform-header')?.classList.add('is-collapsed');
+            document.getElementById('platform-content')?.classList.add('is-collapsed');
+            {% endif %}
+
+            {% if config.get('download_staging_path', config.get('windows_download_path', '')) %}
+            document.getElementById('staging-header')?.classList.add('is-collapsed');
+            document.getElementById('staging-content')?.classList.add('is-collapsed');
+            {% endif %}
+        });
 
         function closeFolderBrowser() {
             document.getElementById('folder-modal').classList.remove('is-active');
@@ -157,12 +325,15 @@
                         if (data.directories.length === 0) {
                             folderList.innerHTML = '<p class="has-text-grey">No subfolders</p>';
                         } else {
-                            folderList.innerHTML = data.directories.map(dir => `
-                                <div class="folder-item" onclick="loadFolders('${dir.path.replace(/'/g, "\\'")}')">
+                            folderList.innerHTML = data.directories.map(dir => {
+                                // Escape backslashes first, then single quotes for the onclick handler
+                                const escapedPath = dir.path.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+                                return `
+                                <div class="folder-item" onclick="loadFolders('${escapedPath}')">
                                     <span class="icon"><i class="fa-solid fa-folder"></i></span>
                                     <span>${dir.name}</span>
                                 </div>
-                            `).join('');
+                            `}).join('');
                         }
                     }
                 })
@@ -184,7 +355,7 @@
         
         function saveBasePath(btn) {
             const basePath = document.getElementById('base_path_input').value;
-            
+
             fetch('/settings/base_path', {
                 method: 'POST',
                 headers: {
@@ -200,86 +371,36 @@
                     btn.textContent = 'Saved!';
                     btn.classList.remove('is-primary');
                     btn.classList.add('is-success');
+                    showToast('Base path saved', 'success');
                     setTimeout(() => {
                         btn.textContent = originalText;
                         btn.classList.remove('is-success');
                         btn.classList.add('is-primary');
                     }, 2000);
                 } else {
-                    alert('Failed to save base path');
+                    showToast('Failed to save base path', 'danger');
                 }
             })
             .catch(error => {
                 console.error('Error saving base path:', error);
-                alert('Failed to save base path');
+                showToast('Failed to save base path', 'danger');
             });
         }
     </script>
     <section class="section">
         <div class="container">
             <h1 class="title">Settings</h1>
-            
-            <!-- Theme Selection -->
-            <div class="card has-background-dark mb-5">
-                <header class="card-header">
-                    <p class="card-header-title">Theme</p>
-                </header>
-                <div class="card-content">
-                    <form method="post" action="{{ url_for('settings_theme') }}" id="theme-form">
-                        <div class="theme-grid">
-                            {% for t in themes %}
-                            <label class="theme-option {% if config.get('theme', 'oled-limited') == t.id %}selected{% endif %}" onclick="selectTheme('{{ t.id }}')">
-                                <input type="radio" name="theme" value="{{ t.id }}" {% if config.get('theme', 'oled-limited') == t.id %}checked{% endif %}>
-                                <div class="theme-check"><i class="fa-solid fa-check"></i></div>
-                                <div class="theme-preview" style="
-                                    {% if t.id == 'oled-limited' %}--preview-navbar: #FF6B00; --preview-body: #0a0a0a; --preview-card: #1a1a2e; --preview-text: #fff;
-                                    {% elif t.id == 'oled-black' %}--preview-navbar: #000000; --preview-body: #000000; --preview-card: #111111; --preview-text: #fff;
-                                    {% elif t.id == 'classic-white' %}--preview-navbar: #ffffff; --preview-body: #f5f5f5; --preview-card: #ffffff; --preview-text: #333;
-                                    {% elif t.id == 'monochrome' %}--preview-navbar: #222222; --preview-body: #111111; --preview-card: #1a1a1a; --preview-text: #fff;
-                                    {% elif t.id == 'steam-blue' %}--preview-navbar: #171a21; --preview-body: #1b2838; --preview-card: #2a475e; --preview-text: #c7d5e0;
-                                    {% elif t.id == 'purple-haze' %}--preview-navbar: #5a189a; --preview-body: #10002b; --preview-card: #240046; --preview-text: #fff;
-                                    {% elif t.id == 'matrix-green' %}--preview-navbar: #001a00; --preview-body: #000d00; --preview-card: #001a00; --preview-text: #00ff41;
-                                    {% elif t.id == 'crimson-red' %}--preview-navbar: #7f1d1d; --preview-body: #1c1917; --preview-card: #292524; --preview-text: #fff;
-                                    {% elif t.id == 'ocean-teal' %}--preview-navbar: #134e4a; --preview-body: #042f2e; --preview-card: #115e59; --preview-text: #fff;
-                                    {% elif t.id == 'sunset-gold' %}--preview-navbar: #78350f; --preview-body: #1c1917; --preview-card: #292524; --preview-text: #fff;
-                                    {% endif %}
-                                ">
-                                    <div class="theme-preview-navbar" style="background-color: var(--preview-navbar);">
-                                        <span style="color: var(--preview-text);">R2SD</span>
-                                    </div>
-                                    <div class="theme-preview-body" style="background-color: var(--preview-body);">
-                                        <div class="theme-preview-card" style="background-color: var(--preview-card);"></div>
-                                        <div class="theme-preview-card" style="background-color: var(--preview-card);"></div>
-                                        <div class="theme-preview-card" style="background-color: var(--preview-card);"></div>
-                                    </div>
-                                </div>
-                                <div class="theme-label" style="color: var(--preview-text, #fff);">{{ t.name }}</div>
-                            </label>
-                            {% endfor %}
-                        </div>
-                        <div class="control mt-4">
-                            <button class="button is-primary" type="submit">
-                                Apply Theme
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-            
-            <script>
-                function selectTheme(themeId) {
-                    // Update visual selection
-                    document.querySelectorAll('.theme-option').forEach(el => el.classList.remove('selected'));
-                    event.currentTarget.classList.add('selected');
-                }
-            </script>
-            
+
             <!-- RomM API Settings -->
             <div class="card has-background-dark mb-5">
-                <header class="card-header">
-                    <p class="card-header-title">RomM API Connection</p>
+                <header class="card-header is-collapsible" id="api-header" onclick="toggleCard(this)">
+                    <p class="card-header-title">
+                        RomM API Connection
+                        {% if config.get('romm_api_base_url', '') %}<span class="config-status">Configured</span>{% endif %}
+                    </p>
+                    <span class="icon collapse-icon"><i class="fa-solid fa-chevron-down"></i></span>
                 </header>
-                <div class="card-content">
+                <div class="card-content is-collapsible" id="api-content">
                     <form method="post" action="{{ url_for('settings_romm_api') }}">
                         <div class="field">
                             <label class="label">RomM API URL</label>
@@ -287,7 +408,7 @@
                                 <input class="input" type="text" placeholder="http://your-romm-server:8998/api" name="romm_api_base_url" value="{{ config.get('romm_api_base_url', '') }}">
                             </div>
                         </div>
-                        
+
                         <div class="field">
                             <label class="label">Username</label>
                             <div class="control">
@@ -313,10 +434,14 @@
 
             <!-- Default Platform -->
             <div class="card has-background-dark mb-5">
-                <header class="card-header">
-                    <p class="card-header-title">Default Platform</p>
+                <header class="card-header is-collapsible" id="platform-header" onclick="toggleCard(this)">
+                    <p class="card-header-title">
+                        Default Platform
+                        {% if config.get('default_platform_id', '') %}<span class="config-status">Configured</span>{% endif %}
+                    </p>
+                    <span class="icon collapse-icon"><i class="fa-solid fa-chevron-down"></i></span>
                 </header>
-                <div class="card-content">
+                <div class="card-content is-collapsible" id="platform-content">
                     <form method="post" action="{{ url_for('settings_default_platform') }}">
                         <div class="field">
                             <label class="label">Platform to load on startup</label>
@@ -340,53 +465,27 @@
                     </form>
                 </div>
             </div>
-            
-            <!-- Add to Steam Integration -->
+
+            <!-- Download Staging Path (for platforms with Auto-Extract) -->
             <div class="card has-background-dark mb-5">
-                <header class="card-header">
-                    <p class="card-header-title">Add to Steam (Experimental)</p>
-                </header>
-                <div class="card-content">
-                    <p class="mb-4 has-text-grey-light">
-                        When enabled, Windows downloads will scan for <code>.exe</code> files after extraction and
-                        offer to add them to Steam as non-Steam games. This feature touches Steam's
-                        <code>shortcuts.vdf</code> file and should be considered experimental.
+                <header class="card-header is-collapsible" id="staging-header" onclick="toggleCard(this)">
+                    <p class="card-header-title">
+                        Download Staging Path
+                        {% if config.get('download_staging_path', config.get('windows_download_path', '')) %}<span class="config-status">Configured</span>{% endif %}
                     </p>
-                    <form method="post" action="{{ url_for('settings_add_to_steam') }}">
-                        <div class="field">
-                            <label class="checkbox">
-                                <input type="checkbox" name="enable_add_to_steam" {% if config.get('enable_add_to_steam', '0') == '1' %}checked{% endif %}>
-                                Enable Add to Steam integration and exe search (Windows games)
-                            </label>
-                            <p class="help is-danger mt-1">
-                                Recommended only if you have a backup of your Steam shortcuts.
-                            </p>
-                        </div>
-                        <div class="control">
-                            <button class="button is-primary" type="submit">
-                                Save Add to Steam Setting
-                            </button>
-                        </div>
-                    </form>
-                </div>
-            </div>
-            
-            <!-- Windows Download Settings -->
-            <div class="card has-background-dark mb-5">
-                <header class="card-header">
-                    <p class="card-header-title">Windows Games Download</p>
+                    <span class="icon collapse-icon"><i class="fa-solid fa-chevron-down"></i></span>
                 </header>
-                <div class="card-content">
+                <div class="card-content is-collapsible" id="staging-content">
                     <p class="mb-4 has-text-grey-light">
-                        Windows games are downloaded as compressed files (7z/zip) to the staging path, then extracted to the Windows platform folder.
+                        For platforms with <strong>Auto-Extract</strong> enabled, compressed files (7z/zip) are first downloaded to this staging path, then extracted to the platform's install path.
                     </p>
-                    <form method="post" action="{{ url_for('settings_windows_paths') }}" id="path-form">
+                    <form method="post" action="{{ url_for('settings_staging_path') }}" id="staging-form">
                         <div class="field">
-                            <label class="label">Download Staging Path</label>
-                            <p class="help mb-2">Where compressed files are downloaded before extraction</p>
+                            <label class="label">Staging Path</label>
+                            <p class="help mb-2">Temporary location for downloaded archives before extraction</p>
                             <div class="field has-addons">
                                 <div class="control is-expanded">
-                                    <input class="input" type="text" name="windows_download_path" id="steamdeck_path" placeholder="/home/deck/Downloads" value="{{ config.get('windows_download_path', config.get('steamdeck_retrodeck_path', '')) }}">
+                                    <input class="input" type="text" name="download_staging_path" id="steamdeck_path" placeholder="/home/deck/Downloads" value="{{ config.get('download_staging_path', config.get('windows_download_path', '')) }}">
                                 </div>
                                 <div class="control">
                                     <button class="button is-info" type="button" onclick="openFolderBrowser()">
@@ -395,23 +494,37 @@
                                 </div>
                             </div>
                         </div>
+                        <div class="control">
+                            <button class="button is-primary" type="submit">
+                                Save Staging Path
+                            </button>
+                        </div>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Application Behavior -->
+            <div class="card has-background-dark mb-5">
+                <header class="card-header">
+                    <p class="card-header-title">Application Behavior</p>
+                </header>
+                <div class="card-content">
+                    <form method="post" action="{{ url_for('settings_browser') }}">
                         <div class="field">
-                            <label class="label">Windows Games Install Path</label>
-                            <p class="help mb-2">Where games are extracted to (can also be set in Platform Folder Mappings below)</p>
-                            <div class="field has-addons">
-                                <div class="control is-expanded">
-                                    <input class="input" type="text" name="windows_install_path" id="windows_install_path" placeholder="/home/deck/Games/Windows" value="{{ config.get('windows_install_path', '') }}">
-                                </div>
-                                <div class="control">
-                                    <button class="button is-info" type="button" onclick="openWindowsInstallBrowser()">
-                                        <span class="icon"><i class="fa-solid fa-folder-open"></i></span>
-                                    </button>
-                                </div>
+                            <div class="control">
+                                <label class="checkbox">
+                                    <input type="checkbox" name="open_browser_on_startup" {% if config.get('open_browser_on_startup', '1') == '1' %}checked{% endif %}>
+                                    Open RomM2SteamDeck in your browser automatically when the app starts
+                                </label>
                             </div>
+                            <p class="help mt-2 has-text-grey-light">
+                                When disabled, you can manually open the app by navigating to <code>http://127.0.0.1:5001</code> in your browser.
+                                Useful for kiosk setups or when launching the app through another launcher that manages the browser.
+                            </p>
                         </div>
                         <div class="control">
                             <button class="button is-primary" type="submit">
-                                Save Windows Paths
+                                Save Browser Setting
                             </button>
                         </div>
                     </form>
@@ -505,14 +618,15 @@
                             <tr>
                                 <th>RomM Platform</th>
                                 <th>RomM Folder</th>
-                                <th>Local Folder Name</th>
+                                <th>ROM Folder Path</th>
+                                <th style="width: 100px;">Auto-Extract</th>
                                 <th></th>
                             </tr>
                         </thead>
                         <tbody>
                             {% for platform in platform_matching %}
-                            <tr>
-                                <form method="post" action="{{ url_for('settings_platform_matching') }}">
+                            <tr id="platform-row-{{ platform.romm_platform_id }}">
+                                <form method="post" action="{{ url_for('settings_platform_matching') }}" class="platform-form">
                                     <td class="is-vcentered">{{ platform.romm_platform_name }}</td>
                                     <td>
                                         <input class="input is-small" type="text" name="romm_fs_slug" placeholder="folder-slug" value="{{ platform.romm_fs_slug or '' }}" style="max-width: 120px;">
@@ -521,10 +635,37 @@
                                         <input type="hidden" name="romm_platform_id" value="{{ platform.romm_platform_id }}">
                                         <input class="input" type="text" name="steamdeck_platform_name" placeholder="full-path" value="{{ platform.steamdeck_platform_name }}">
                                     </td>
+                                    <td class="has-text-centered">
+                                        <label class="checkbox">
+                                            <input type="checkbox" name="auto_extract" value="1" {% if platform.auto_extract %}checked{% endif %}
+                                                   onchange="toggleInstallPaths({{ platform.romm_platform_id }}, this.checked)">
+                                        </label>
+                                    </td>
                                     <td>
-                                        <button class="button is-primary" type="submit">Save</button>
+                                        <button class="button is-primary is-small" type="submit">Save</button>
                                     </td>
                                 </form>
+                            </tr>
+                            <!-- Install paths row (hidden by default, shown when auto_extract is enabled) -->
+                            <tr id="install-paths-row-{{ platform.romm_platform_id }}" class="install-paths-row" style="{% if not platform.auto_extract %}display: none;{% endif %}">
+                                <td colspan="5" style="background: rgba(0,0,0,0.2); padding: 1rem;">
+                                    <div class="is-flex is-align-items-center mb-2">
+                                        <span class="icon has-text-info mr-2"><i class="fa-solid fa-folder-tree"></i></span>
+                                        <strong>Install Paths for {{ platform.romm_platform_name }}</strong>
+                                    </div>
+                                    <p class="help mb-3 has-text-grey-light">Where extracted files will be installed. Add multiple paths to choose destination during download.</p>
+                                    <div id="platform-install-paths-{{ platform.romm_platform_id }}" class="platform-install-paths">
+                                        <!-- Populated by JavaScript -->
+                                    </div>
+                                    <button class="button is-info is-small mt-2" type="button" onclick="addPlatformInstallPath({{ platform.romm_platform_id }})">
+                                        <span class="icon"><i class="fa-solid fa-plus"></i></span>
+                                        <span>Add Path</span>
+                                    </button>
+                                    <button class="button is-primary is-small mt-2 ml-2" type="button" onclick="savePlatformInstallPaths({{ platform.romm_platform_id }})">
+                                        <span class="icon"><i class="fa-solid fa-save"></i></span>
+                                        <span>Save Paths</span>
+                                    </button>
+                                </td>
                             </tr>
                             {% endfor %}
                         </tbody>

@@ -17,25 +17,28 @@
         </div>
     </section>
 
-    <!-- Add to Steam Modal -->
-    <div class="modal" id="add-to-steam-modal">
-        <div class="modal-background" onclick="closeAddToSteamModal()"></div>
-        <div class="modal-card" style="max-width: 600px;">
+    <!-- Add to Steam Modal — Removed due to issues with Steam shortcuts.vdf file parsing -->
+    <!-- <div class="modal" id="add-to-steam-modal"> ... </div> -->
+
+    <!-- Install Path Selection Modal (shown when two Windows install paths are configured) -->
+    <div class="modal" id="install-path-modal">
+        <div class="modal-background" onclick="closeInstallPathModal()"></div>
+        <div class="modal-card" style="max-width: 500px;">
             <header class="modal-card-head" style="background-color: var(--theme-card-bg, #1a1a2e);">
-                <p class="modal-card-title" style="color: var(--theme-text, #fff);">Add to Steam</p>
-                <button class="delete" aria-label="close" onclick="closeAddToSteamModal()"></button>
+                <p class="modal-card-title" style="color: var(--theme-text, #fff);">Select Install Path</p>
+                <button class="delete" aria-label="close" onclick="closeInstallPathModal()"></button>
             </header>
             <section class="modal-card-body" style="background-color: var(--theme-body-bg, #0a0a0a);">
-                <p class="mb-4" style="color: var(--theme-text-muted);">Select an executable to add to Steam as a non-Steam game:</p>
-                <div id="exe-list" class="exe-list">
-                    <!-- Exe files will be listed here -->
+                <p class="mb-4" style="color: var(--theme-text-muted);">Choose where to extract this game:</p>
+                <div id="install-paths-radio-list">
+                    <!-- Radio buttons populated dynamically by showInstallPathModal() -->
                 </div>
             </section>
             <footer class="modal-card-foot" style="background-color: var(--theme-card-bg, #1a1a2e); justify-content: flex-end;">
-                <button class="button" onclick="closeAddToSteamModal()">Skip</button>
-                <button class="button is-primary" id="add-to-steam-btn" onclick="addSelectedToSteam()" disabled>
-                    <span class="icon"><i class="fa-brands fa-steam"></i></span>
-                    <span>Add to Steam</span>
+                <button class="button" onclick="closeInstallPathModal()">Cancel</button>
+                <button class="button is-primary" id="confirm-path-btn" onclick="confirmInstallPath()" disabled>
+                    <span class="icon"><i class="fa-solid fa-download"></i></span>
+                    <span>Download</span>
                 </button>
             </footer>
         </div>
@@ -123,13 +126,17 @@
         let platformsData = [];
         let currentModalRomId = null;
         let currentModalRomName = null;
-        let pendingExeFiles = [];
-        let pendingGameName = '';
-        let selectedExePath = null;
+        // let pendingExeFiles = [];   // Removed: Add to Steam
+        // let pendingGameName = '';   // Removed: Add to Steam
+        // let selectedExePath = null; // Removed: Add to Steam
         const rommBaseUrl = {{ romm_base_url|tojson }};
         const DEFAULT_PLATFORM_ID = {{ default_platform_id|tojson }};
-        const WINDOWS_PLATFORM_ID = 249;
-        const ENABLE_ADD_TO_STEAM = {{ enable_add_to_steam|default(false)|tojson }};
+        // Platform config cache - populated when switching platforms
+        let currentPlatformConfig = { auto_extract: false, install_paths: [], rom_folder: '' };
+        let pendingDownloadRomId = null;
+        let pendingDownloadRomName = null;
+        let selectedInstallPath = null;
+        const activeEventSources = {};  // rom_id → EventSource, kept alive so cancel can close them
 
         // Check if we should load a specific platform directly from URL
         const urlPlatformId = {{ platform_id|tojson }};
@@ -321,7 +328,13 @@
                                 </button>
                                 <div class="progress-wrapper" id="progress-wrapper-${rom.id}" style="display: none;">
                                     <progress class="progress is-small is-primary" id="progress-bar-${rom.id}" value="0" max="100">0%</progress>
-                                    <span class="progress-text" id="progress-text-${rom.id}">0%</span>
+                                    <div class="progress-footer">
+                                        <span class="progress-text" id="progress-text-${rom.id}">0%</span>
+                                        <button class="button is-small is-warning" id="cancel-btn-${rom.id}" onclick="cancelDownload(${rom.id})">
+                                            <span class="icon is-small"><i class="fa-solid fa-xmark"></i></span>
+                                            <span>Cancel</span>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
                         </div>
@@ -366,10 +379,37 @@
         }
 
         function downloadRom(romId, romName) {
-            if (downloadingRoms.has(romId)) {
-                return; // Already downloading
-            }
+            // Fetch platform config to check if it needs path selection
+            fetch(`/api/platform/${currentPlatformId}/config`)
+            .then(response => response.json())
+            .then(config => {
+                if (!config.success) {
+                    showToast(config.error || 'Failed to get platform config', 'danger');
+                    return;
+                }
+                currentPlatformConfig = config;
 
+                // Platform with auto_extract and multiple install paths: show path selection modal
+                if (config.auto_extract && config.install_paths && config.install_paths.length > 1) {
+                    pendingDownloadRomId = romId;
+                    pendingDownloadRomName = romName;
+                    showInstallPathModal(config.install_paths);
+                    return;
+                }
+                // Auto-extract with 1 path: use that path
+                // No auto-extract or 0 paths: proceed directly (backend handles it)
+                const installPath = (config.auto_extract && config.install_paths.length === 1) ? config.install_paths[0] : '';
+                // Start download directly
+                startDownload(romId, romName, installPath);
+            })
+            .catch(error => {
+                console.error('Error fetching platform config:', error);
+                // Proceed with download anyway, backend will validate
+                startDownload(romId, romName, '');
+            });
+        }
+
+        function startDownload(romId, romName, installPath) {
             downloadingRoms.add(romId);
             const btn = document.getElementById(`download-btn-${romId}`);
             const progressWrapper = document.getElementById(`progress-wrapper-${romId}`);
@@ -387,32 +427,40 @@
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json'
-                }
+                },
+                body: JSON.stringify({ install_path: installPath })
             })
             .then(response => response.json())
             .then(data => {
                 if (data.success) {
                     // Connect to SSE for progress updates
                     const eventSource = new EventSource(`/api/download/progress/${romId}`);
-                    
+                    activeEventSources[romId] = eventSource;
+                    const cancelBtn = document.getElementById(`cancel-btn-${romId}`);
+
                     eventSource.onmessage = function(event) {
                         const progress = JSON.parse(event.data);
-                        
+
                         if (progress.status === 'downloading') {
                             progressBar.value = progress.progress;
                             const downloadedMB = (progress.downloaded / (1024 * 1024)).toFixed(1);
                             const totalMB = (progress.total / (1024 * 1024)).toFixed(1);
                             progressText.textContent = `${progress.progress}% (${downloadedMB}/${totalMB} MB)`;
                         } else if (progress.status === 'extracting') {
-                            progressBar.value = 100;
-                            progressText.textContent = 'Extracting...';
+                            // Show extraction progress (0-100%)
+                            const extractPercent = progress.progress || 0;
+                            progressBar.value = extractPercent;
+                            progressText.textContent = `Extracting... ${extractPercent}%`;
                             progressBar.classList.remove('is-primary');
                             progressBar.classList.add('is-warning');
+                            if (cancelBtn) cancelBtn.disabled = true;
+                            // No toast here - progress bar shows status
                         } else if (progress.status === 'complete' || progress.status === 'extracted') {
                             eventSource.close();
+                            delete activeEventSources[romId];
                             downloadingRoms.delete(romId);
                             downloadedRoms.add(romId);
-                            
+
                             // Show delete button (since it's now downloaded)
                             progressWrapper.style.display = 'none';
                             btn.style.display = 'flex';
@@ -420,16 +468,24 @@
                             btn.classList.remove('is-primary', 'is-warning', 'is-success');
                             btn.classList.add('is-danger');
                             btn.disabled = false;
-                            
-                            // Optionally offer to add Windows games to Steam
-                            // (only when enabled via Settings, and only when exe files were found)
-                            if (ENABLE_ADD_TO_STEAM && progress.exe_files && progress.exe_files.length > 0) {
-                                showAddToSteamModal(progress.exe_files, progress.rom_name || romName);
-                            }
+                            showToast(`${romName} ready to play`, 'success');
+                        } else if (progress.status === 'cancelled') {
+                            eventSource.close();
+                            delete activeEventSources[romId];
+                            downloadingRoms.delete(romId);
+                            // Reset to download button
+                            progressWrapper.style.display = 'none';
+                            btn.style.display = 'flex';
+                            btn.innerHTML = '<span class="icon"><i class="fa-solid fa-download"></i></span><span>Download</span>';
+                            btn.classList.remove('is-danger', 'is-warning', 'is-success');
+                            btn.classList.add('is-primary');
+                            btn.disabled = false;
+                            showToast(`Download cancelled`, 'warning', 2000);
                         } else if (progress.status === 'error') {
                             eventSource.close();
+                            delete activeEventSources[romId];
                             downloadingRoms.delete(romId);
-                            
+
                             // Show error state
                             progressWrapper.style.display = 'none';
                             btn.style.display = 'flex';
@@ -437,6 +493,7 @@
                             btn.classList.remove('is-primary', 'is-warning');
                             btn.classList.add('is-danger');
                             btn.disabled = false;
+                            showToast(progress.error || 'Download failed', 'danger');
                             console.error('Download error:', progress.error);
                         }
                     };
@@ -461,10 +518,11 @@
                     downloadingRoms.delete(romId);
                     progressWrapper.style.display = 'none';
                     btn.style.display = 'flex';
-                    btn.innerHTML = '<span class="icon"><i class="fa-solid fa-xmark"></i></span><span>Failed</span>';
-                    btn.classList.remove('is-primary');
-                    btn.classList.add('is-danger');
+                    btn.innerHTML = '<span class="icon"><i class="fa-solid fa-download"></i></span><span>Download</span>';
+                    btn.classList.remove('is-danger', 'is-warning', 'is-success');
+                    btn.classList.add('is-primary');
                     btn.disabled = false;
+                    showToast(data.error || 'Download failed', 'danger');
                     console.error('Download failed:', data.error);
                 }
             })
@@ -472,10 +530,11 @@
                 downloadingRoms.delete(romId);
                 progressWrapper.style.display = 'none';
                 btn.style.display = 'flex';
-                btn.innerHTML = '<span class="icon"><i class="fa-solid fa-xmark"></i></span><span>Error</span>';
-                btn.classList.remove('is-primary');
-                btn.classList.add('is-danger');
+                btn.innerHTML = '<span class="icon"><i class="fa-solid fa-download"></i></span><span>Download</span>';
+                btn.classList.remove('is-danger', 'is-warning', 'is-success');
+                btn.classList.add('is-primary');
                 btn.disabled = false;
+                showToast('Download failed - network error', 'danger');
                 console.error('Download error:', error);
             });
         }
@@ -612,92 +671,68 @@
             return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
         }
         
-        function showAddToSteamModal(exeFiles, gameName) {
-            pendingExeFiles = exeFiles;
-            pendingGameName = gameName;
-            selectedExePath = null;
-            
-            const exeList = document.getElementById('exe-list');
-            exeList.innerHTML = '';
-            
-            exeFiles.forEach((exe, index) => {
-                const item = document.createElement('label');
-                item.className = 'exe-item';
-                item.innerHTML = `
-                    <input type="radio" name="exe-select" value="${index}" onchange="selectExe(${index})">
-                    <span class="exe-icon"><i class="fa-solid fa-file-code"></i></span>
-                    <span class="exe-name">${escapeHtml(exe.name)}</span>
-                `;
-                exeList.appendChild(item);
-            });
-            
-            // Reset button state
-            const btn = document.getElementById('add-to-steam-btn');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="icon"><i class="fa-brands fa-steam"></i></span><span>Add to Steam</span>';
-            btn.classList.remove('is-success');
+        // Removed: showAddToSteamModal, closeAddToSteamModal, selectExe, addSelectedToSteam
+        // (Add to Steam feature commented out due to issues with Steam shortcuts.vdf file parsing)
+
+        // Store current modal paths for selection
+        let currentModalInstallPaths = [];
+
+        function showInstallPathModal(paths) {
+            currentModalInstallPaths = paths || [];
+            const container = document.getElementById('install-paths-radio-list');
+            container.innerHTML = currentModalInstallPaths.map((path, index) => `
+                <label class="path-option" onclick="selectInstallPath(${index})">
+                    <input type="radio" name="install-path-select" value="${index}">
+                    <span class="path-icon"><i class="fa-solid fa-folder"></i></span>
+                    <span class="path-label">${escapeHtml(path)}</span>
+                </label>
+            `).join('');
+            selectedInstallPath = null;
+            document.getElementById('confirm-path-btn').disabled = true;
+            document.getElementById('install-path-modal').classList.add('is-active');
+        }
+
+        function closeInstallPathModal() {
+            document.getElementById('install-path-modal').classList.remove('is-active');
+            pendingDownloadRomId = null;
+            pendingDownloadRomName = null;
+            selectedInstallPath = null;
+            currentModalInstallPaths = [];
+        }
+
+        function selectInstallPath(index) {
+            selectedInstallPath = currentModalInstallPaths[index];
+            document.getElementById('confirm-path-btn').disabled = false;
+            document.querySelectorAll('.path-option').forEach((el, i) => el.classList.toggle('selected', i === index));
+        }
+
+        function confirmInstallPath() {
+            if (!pendingDownloadRomId || !selectedInstallPath) return;
+            const romId = pendingDownloadRomId;
+            const romName = pendingDownloadRomName;
+            const installPath = selectedInstallPath;
+            closeInstallPathModal();
+            startDownload(romId, romName, installPath);
+        }
+
+        function cancelDownload(romId) {
+            // Close SSE immediately so we stop listening
+            if (activeEventSources[romId]) {
+                activeEventSources[romId].close();
+                delete activeEventSources[romId];
+            }
+            // Tell the backend to stop the thread
+            fetch(`/api/download/cancel/${romId}`, { method: 'POST' });
+            // Reset UI right away — don't wait for SSE confirmation
+            downloadingRoms.delete(romId);
+            const btn = document.getElementById(`download-btn-${romId}`);
+            const progressWrapper = document.getElementById(`progress-wrapper-${romId}`);
+            progressWrapper.style.display = 'none';
+            btn.style.display = 'flex';
+            btn.innerHTML = '<span class="icon"><i class="fa-solid fa-download"></i></span><span>Download</span>';
+            btn.classList.remove('is-danger', 'is-warning', 'is-success');
             btn.classList.add('is-primary');
-            
-            document.getElementById('add-to-steam-modal').classList.add('is-active');
-        }
-        
-        function closeAddToSteamModal() {
-            document.getElementById('add-to-steam-modal').classList.remove('is-active');
-            pendingExeFiles = [];
-            pendingGameName = '';
-            selectedExePath = null;
-        }
-        
-        function selectExe(index) {
-            selectedExePath = pendingExeFiles[index].path;
-            document.getElementById('add-to-steam-btn').disabled = false;
-            
-            // Update visual selection
-            document.querySelectorAll('.exe-item').forEach((item, i) => {
-                item.classList.toggle('selected', i === index);
-            });
-        }
-        
-        function addSelectedToSteam() {
-            if (!selectedExePath) return;
-            
-            const btn = document.getElementById('add-to-steam-btn');
-            btn.disabled = true;
-            btn.innerHTML = '<span class="icon"><i class="fa-solid fa-spinner fa-spin"></i></span><span>Adding...</span>';
-            
-            fetch('/api/add_to_steam', {
-                method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({
-                    exe_path: selectedExePath,
-                    game_name: pendingGameName
-                })
-            })
-            .then(response => response.json())
-            .then(data => {
-                if (data.success) {
-                    btn.innerHTML = '<span class="icon"><i class="fa-solid fa-check"></i></span><span>Added!</span>';
-                    btn.classList.remove('is-primary');
-                    btn.classList.add('is-success');
-                    
-                    // Show reminder to restart Steam
-                    alert('Game added to Steam!\n\nIMPORTANT: You must fully close and restart Steam for the game to appear in your library.');
-                    
-                    closeAddToSteamModal();
-                } else {
-                    btn.innerHTML = '<span class="icon"><i class="fa-brands fa-steam"></i></span><span>Add to Steam</span>';
-                    btn.disabled = false;
-                    alert('Failed to add to Steam: ' + (data.error || 'Unknown error'));
-                }
-            })
-            .catch(error => {
-                console.error('Error adding to Steam:', error);
-                btn.innerHTML = '<span class="icon"><i class="fa-brands fa-steam"></i></span><span>Add to Steam</span>';
-                btn.disabled = false;
-                alert('Failed to add to Steam');
-            });
+            btn.disabled = false;
         }
 
         function deleteRom(romId, romName) {
@@ -738,6 +773,51 @@
             });
         }
 
+        // Update a card button based on status
+        function updateCardButton(romId, status, progress = 0) {
+            const btn = document.getElementById(`download-btn-${romId}`);
+            const progressWrapper = document.getElementById(`progress-wrapper-${romId}`);
+            if (!btn) return;
+
+            const buttonConfig = {
+                'ready': { text: 'Download', class: 'is-primary', icon: 'fa-download', disabled: false },
+                'queued': { text: 'Queued', class: 'is-info', icon: 'fa-clock', disabled: true },
+                'downloading': { text: 'Downloading', class: 'is-warning', icon: 'fa-spinner fa-spin', disabled: true },
+                'extracting': { text: 'Extracting', class: 'is-warning', icon: 'fa-file-zipper', disabled: true },
+                'complete': { text: 'Delete', class: 'is-danger', icon: 'fa-trash', disabled: false },
+                'downloaded': { text: 'Delete', class: 'is-danger', icon: 'fa-trash', disabled: false },
+                'error': { text: 'Retry', class: 'is-danger', icon: 'fa-redo', disabled: false },
+                'stalled': { text: 'Retry', class: 'is-warning', icon: 'fa-redo', disabled: false },
+                'cancelled': { text: 'Download', class: 'is-primary', icon: 'fa-download', disabled: false }
+            };
+
+            const config = buttonConfig[status] || buttonConfig['ready'];
+
+            // Hide progress wrapper, show button
+            if (progressWrapper) progressWrapper.style.display = 'none';
+            btn.style.display = 'flex';
+
+            btn.innerHTML = `<span class="icon"><i class="fa-solid ${config.icon}"></i></span><span>${config.text}</span>`;
+            btn.className = `button ${config.class} is-fullwidth download-btn`;
+            btn.disabled = config.disabled;
+        }
+
+        // Update all card buttons based on download state
+        function updateAllCardButtons() {
+            // Reset non-downloaded buttons to ready state first
+            document.querySelectorAll('.download-btn').forEach(btn => {
+                const romId = parseInt(btn.id.replace('download-btn-', ''));
+                if (!downloadedRoms.has(romId)) {
+                    updateCardButton(romId, 'ready');
+                }
+            });
+
+            // Update downloaded buttons
+            downloadedRoms.forEach(romId => {
+                updateCardButton(romId, 'downloaded');
+            });
+        }
+
         function escapeHtml(text) {
             if (!text) return '';
             const div = document.createElement('div');
@@ -768,7 +848,9 @@
         }
         
         .rom-card {
-            display: block;
+            display: flex;
+            flex-direction: column;
+            flex: 1;
             width: 100%;
             border-radius: 8px;
             overflow: hidden;
@@ -788,6 +870,7 @@
             aspect-ratio: 3 / 4;
             background: #111;
             overflow: hidden;
+            flex-shrink: 0;
         }
         
         .rom-card-image .cover-img {
@@ -825,12 +908,14 @@
         
         .rom-card .download-container {
             width: 100%;
+            margin-top: auto;
         }
-        
+
         .progress-wrapper {
             padding: 0.5rem;
             background: var(--theme-card-bg, #1a1a2e);
             border-radius: 0 0 8px 8px;
+            min-height: 50px;
         }
         
         .progress-wrapper .progress {
@@ -854,11 +939,15 @@
             background-color: #ffdd57;
         }
         
+        .progress-footer {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
         .progress-text {
-            display: block;
             font-size: 0.7rem;
             color: #aaa;
-            text-align: center;
         }
         
         /* Game Details Modal */
@@ -888,13 +977,11 @@
             background: linear-gradient(transparent, rgba(0, 0, 0, 0.95));
         }
         
-        /* Add to Steam Modal */
-        .exe-list {
-            max-height: 300px;
-            overflow-y: auto;
-        }
-        
-        .exe-item {
+        /* Add to Steam Modal styles — Removed */
+        /* .exe-list, .exe-item, .exe-icon, .exe-name { ... } */
+
+        /* Install Path Selection Modal */
+        .path-option {
             display: flex;
             align-items: center;
             padding: 0.75rem;
@@ -905,27 +992,27 @@
             border: 2px solid transparent;
             transition: all 0.2s;
         }
-        
-        .exe-item:hover {
+
+        .path-option:hover {
             border-color: var(--theme-primary-glow);
         }
-        
-        .exe-item.selected {
+
+        .path-option.selected {
             border-color: var(--theme-primary);
             background: rgba(255, 107, 0, 0.1);
         }
-        
-        .exe-item input[type="radio"] {
+
+        .path-option input[type="radio"] {
             display: none;
         }
-        
-        .exe-icon {
+
+        .path-icon {
             color: var(--theme-primary);
             margin-right: 0.75rem;
             font-size: 1.25rem;
         }
-        
-        .exe-name {
+
+        .path-label {
             color: var(--theme-text);
             font-size: 0.9rem;
             word-break: break-all;
