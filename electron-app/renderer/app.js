@@ -243,8 +243,8 @@ function updateCardBadge(romId) {
     if (!badge) {
       badge = document.createElement('div');
       badge.className = 'dl-badge';
-      badge.title = 'Downloaded';
-      badge.textContent = '✓';
+      badge.title = 'Installed — ready to play';
+      badge.textContent = '▶';
       wrap.appendChild(badge);
     }
   } else {
@@ -283,8 +283,8 @@ function renderGrid() {
     if (state.downloads.has(rom.id)) {
       const badge = document.createElement('div');
       badge.className = 'dl-badge';
-      badge.title = 'Downloaded';
-      badge.textContent = '✓';
+      badge.title = 'Installed — ready to play';
+      badge.textContent = '▶';
       wrap.appendChild(badge);
     }
 
