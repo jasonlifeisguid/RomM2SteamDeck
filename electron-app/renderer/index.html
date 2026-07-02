@@ -114,7 +114,7 @@
   <!-- Settings modal -->
   <div id="settings-modal" class="modal" hidden>
     <div class="modal-backdrop"></div>
-    <div class="modal-card">
+    <div class="modal-card settings-card">
       <h2>Settings</h2>
       <label>RomM Server URL
         <input id="cfg-url" type="text" placeholder="https://romm.example.com" autocomplete="off">
@@ -126,13 +126,20 @@
         <input id="cfg-password" type="password" placeholder="(unchanged)" autocomplete="off">
       </label>
       <div id="cfg-test-result" class="small"></div>
+
+      <div class="settings-section">
+        <span class="settings-section-label">Manage</span>
+        <div class="settings-utils">
+          <button id="btn-platforms" class="secondary">Platform Folders&hellip;</button>
+          <button id="btn-clear-cache" class="secondary">Clear Cache</button>
+        </div>
+      </div>
+
       <div class="modal-actions">
-        <button id="btn-platforms" class="secondary">Platform Folders&hellip;</button>
-        <button id="btn-clear-cache" class="secondary">Clear Cache</button>
-        <span class="spacer"></span>
         <button id="btn-test" class="secondary">Test Connection</button>
-        <button id="btn-save" class="primary">Save</button>
+        <span class="spacer"></span>
         <button id="btn-close-settings" class="secondary">Close</button>
+        <button id="btn-save" class="primary">Save</button>
       </div>
     </div>
   </div>

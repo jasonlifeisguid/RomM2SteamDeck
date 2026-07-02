@@ -206,8 +206,26 @@ input[type="search"] { width: 220px; }
 .modal-card h2 { margin-bottom: 16px; font-size: 1.1rem; }
 .modal-card label { display: block; margin-bottom: 12px; font-size: 0.85rem; color: var(--text-muted); }
 .modal-card label input { display: block; width: 100%; margin-top: 4px; }
-.modal-actions { display: flex; gap: 8px; margin-top: 18px; align-items: center; }
+.modal-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; align-items: center; }
 .modal-actions .spacer { flex: 1; }
+
+/* Settings modal: a touch wider, with maintenance actions grouped apart
+   from the primary Test / Save / Close flow */
+.settings-card { width: 480px; }
+.settings-section {
+  margin-top: 18px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+.settings-section-label {
+  display: block;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--text-muted);
+  margin-bottom: 8px;
+}
+.settings-utils { display: flex; flex-wrap: wrap; gap: 8px; }
 
 button.primary, button.secondary {
   border-radius: 6px;
