@@ -20,7 +20,10 @@ import { RommClient } from './romm';
 import * as config from './config';
 
 const unzipper = require('unzipper');
-const { path7za } = require('7zip-bin');
+// In a packaged app the 7za binary is unpacked from the asar archive (see
+// asarUnpack in package.json); rewrite the path so spawn can find it.
+// In dev the path has no app.asar segment, so the replace is a no-op.
+const path7za = (require('7zip-bin').path7za as string).replace('app.asar', 'app.asar.unpacked');
 
 export interface DownloadRecord {
   romId: number;

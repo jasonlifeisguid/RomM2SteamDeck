@@ -1,9 +1,9 @@
-# Python
+# Python (PyInstaller output at repo root)
 __pycache__/
 *.pyc
 venv/
-build/
-dist/
+/build/
+/dist/
 
 # Runtime artifacts (dev mode writes these into the project dir)
 romm2steamdeck.db
@@ -16,3 +16,4 @@ system.log
 electron-app/node_modules/
 electron-app/dist/
 electron-app/out/
+electron-app/release/

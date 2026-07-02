@@ -57,6 +57,27 @@ Not yet ported (next stages): downloads with progress, zip/7z extraction
 shortcuts, packaging (installer / dmg / AppImage), gamepad navigation,
 add-to-Steam.
 
+## Building distributables (Stage 3)
+
+Packaged with electron-builder. Output lands in `release/`.
+
+```cmd
+npm run dist:win     # Windows: NSIS installer + portable exe
+npm run dist:linux   # Linux/Steam Deck: AppImage (run on Linux)
+npm run dist:mac     # macOS: dmg (run on a Mac — needs Apple tooling)
+```
+
+- Windows and Linux can both be built from a Windows box; the macOS dmg
+  must be built on a Mac.
+- The bundled 7za binary is unpacked from the asar archive
+  (`asarUnpack`) and its path rewritten at runtime, so extraction works in
+  the packaged app with no system 7-Zip.
+- App icon lives in `build/` (icon.png for Linux, icon.ico for Windows;
+  add icon.icns for a signed mac build).
+- Unsigned builds trigger Windows SmartScreen ("More info → Run anyway")
+  and Gatekeeper on macOS — expected for a personal/homelab tool. Code
+  signing certs are optional and not configured.
+
 ## Development
 
 Node.js is installed portably at `C:\Users\Jason\Documents\Claude\tools\nodejs`
