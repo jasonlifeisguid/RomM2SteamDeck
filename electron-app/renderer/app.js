@@ -306,6 +306,9 @@ function renderGrid() {
 
   // Restore progress overlays for in-flight downloads
   for (const romId of state.progress.keys()) updateCardProgress(romId);
+
+  // Re-apply the gamepad focus ring after a re-render
+  if (gp.active && gp.index >= 0) gpSetFocus(gp.index);
 }
 
 async function selectPlatform(platformId, refresh = false) {
@@ -534,11 +537,15 @@ let exePickerRom = null;
 async function openExePicker(rom) {
   exePickerRom = rom;
   exeSelected = null;
-  $('exe-create').disabled = true;
+  $('exe-shortcut').disabled = true;
+  $('exe-steam').disabled = true;
   $('exe-list').innerHTML = '<p class="muted small">Scanning for executables…</p>';
-  // The "right-click → Add to Steam" tip only applies on Linux/Steam Deck
-  const platform = await window.r2sd.getPlatform();
-  $('exe-steamdeck-tip').hidden = platform !== 'linux';
+
+  // Native "Add to Steam" only shown when a Steam install is found; the
+  // "right-click → Add to Steam" tip is the Linux/Deck manual fallback.
+  const [platform, steam] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.steamStatus()]);
+  $('exe-steam').hidden = !steam.found;
+  $('exe-steamdeck-tip').hidden = !(platform === 'linux' && !steam.found);
   $('exe-modal').hidden = false;
 
   const exes = await window.r2sd.listExes(rom.id);
@@ -556,7 +563,8 @@ async function openExePicker(rom) {
     radio.value = String(i);
     radio.addEventListener('change', () => {
       exeSelected = exe;
-      $('exe-create').disabled = false;
+      $('exe-shortcut').disabled = false;
+      $('exe-steam').disabled = false;
       document.querySelectorAll('.exe-option').forEach((el, j) => el.classList.toggle('selected', j === i));
     });
     const span = document.createElement('span');
@@ -578,6 +586,19 @@ async function createShortcut() {
   closeExePicker();
   if (res.error) toast(res.error, 'error');
   else toast('Desktop shortcut created', 'success');
+}
+
+async function addToSteam() {
+  if (!exeSelected || !exePickerRom) return;
+  const res = await window.r2sd.addToSteam(exeSelected.path, exePickerRom.name || exePickerRom.fs_name);
+  if (res.error) {
+    // Keep the picker open (e.g. Steam is running → user needs to quit it first)
+    toast(res.error, 'error');
+    return;
+  }
+  closeExePicker();
+  if (res.alreadyPresent) toast('Already in your Steam library', 'success');
+  else toast('Added to Steam — restart Steam to see it in your library', 'success');
 }
 
 // ── Platform folders modal ──────────────────────────────
@@ -772,6 +793,111 @@ async function saveSettings() {
   await loadPlatforms(true);
 }
 
+// ── Gamepad navigation (Steam Deck / controllers) ───────
+
+const gp = { index: -1, raf: null, prev: {}, lastMove: 0, active: false };
+
+function gpCards() {
+  return [...document.querySelectorAll('#game-grid .game-card')];
+}
+
+function gpColumns() {
+  const cols = getComputedStyle($('game-grid')).gridTemplateColumns.split(' ').filter(Boolean).length;
+  return Math.max(1, cols);
+}
+
+function gpSetFocus(i) {
+  const cards = gpCards();
+  if (!cards.length) { gp.index = -1; return; }
+  gp.index = Math.max(0, Math.min(i, cards.length - 1));
+  cards.forEach((c, j) => c.classList.toggle('gp-focus', j === gp.index));
+  cards[gp.index].scrollIntoView({ block: 'nearest' });
+}
+
+function gpMove(dir) {
+  const cards = gpCards();
+  if (!cards.length) return;
+  if (gp.index < 0) { gpSetFocus(0); return; }
+  const cols = gpColumns();
+  let i = gp.index;
+  if (dir === 'left') i -= 1;
+  else if (dir === 'right') i += 1;
+  else if (dir === 'up') i -= cols;
+  else if (dir === 'down') i += cols;
+  if (i >= 0 && i < cards.length) gpSetFocus(i);
+}
+
+function gpActivate() {
+  const cards = gpCards();
+  if (gp.index >= 0 && cards[gp.index]) cards[gp.index].click();
+}
+
+function anyModalOpen() {
+  return [...document.querySelectorAll('.modal')].some((m) => !m.hidden);
+}
+
+function gpBack() {
+  closeExePicker();
+  closeDetail();
+  closeSettings();
+  closePlatformsModal();
+}
+
+function gpPoll() {
+  const pads = navigator.getGamepads ? navigator.getGamepads() : [];
+  const pad = [...pads].find((p) => p);
+  if (pad) {
+    const now = performance.now();
+    const axH = pad.axes[0] || 0;
+    const axV = pad.axes[1] || 0;
+    const btn = (n) => pad.buttons[n] && pad.buttons[n].pressed;
+    const up = btn(12) || axV < -0.5;
+    const down = btn(13) || axV > 0.5;
+    const left = btn(14) || axH < -0.5;
+    const right = btn(15) || axH > 0.5;
+    const a = btn(0);
+    const b = btn(1);
+
+    if (!anyModalOpen() && now - gp.lastMove > 160) {
+      let moved = true;
+      if (up) gpMove('up');
+      else if (down) gpMove('down');
+      else if (left) gpMove('left');
+      else if (right) gpMove('right');
+      else moved = false;
+      if (moved) gp.lastMove = now;
+    }
+
+    // Edge-triggered A/B
+    if (a && !gp.prev.a) {
+      if (anyModalOpen()) {
+        const dl = $('btn-dl');
+        if (!$('detail-modal').hidden && dl && !dl.hidden) dl.click();
+      } else {
+        gpActivate();
+      }
+    }
+    if (b && !gp.prev.b && anyModalOpen()) gpBack();
+    gp.prev = { a, b };
+  }
+  gp.raf = requestAnimationFrame(gpPoll);
+}
+
+function gpStart() {
+  if (gp.raf) return;
+  gp.active = true;
+  gpPoll();
+}
+function gpStop() {
+  if ([...navigator.getGamepads()].some((p) => p)) return;
+  cancelAnimationFrame(gp.raf);
+  gp.raf = null;
+  gp.active = false;
+}
+
+window.addEventListener('gamepadconnected', gpStart);
+window.addEventListener('gamepaddisconnected', gpStop);
+
 // ── Wire up UI ──────────────────────────────────────────
 
 $('btn-settings').addEventListener('click', openSettings);
@@ -808,7 +934,8 @@ $('btn-dl-delete').addEventListener('click', () => state.detailRom && deleteDown
 $('btn-shortcut').addEventListener('click', () => state.detailRom && openExePicker(state.detailRom));
 $('exe-cancel').addEventListener('click', closeExePicker);
 $('exe-backdrop').addEventListener('click', closeExePicker);
-$('exe-create').addEventListener('click', createShortcut);
+$('exe-shortcut').addEventListener('click', createShortcut);
+$('exe-steam').addEventListener('click', addToSteam);
 
 $('btn-platforms').addEventListener('click', () => { closeSettings(); openPlatformsModal(); });
 $('pf-close').addEventListener('click', closePlatformsModal);

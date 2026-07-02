@@ -1,0 +1,251 @@
+/**
+ * Add non-Steam games by writing Steam's shortcuts.vdf (binary VDF).
+ *
+ * SAFETY MODEL (this is the feature that historically wiped libraries):
+ *  1. Refuse to write while Steam is running (Steam rewrites the file on exit
+ *     and would clobber our change — or worse).
+ *  2. Before writing, re-serialize the EXISTING file and require it to match
+ *     the original bytes exactly. If our serializer can't reproduce this
+ *     Steam version's format perfectly, we abort — never corrupt.
+ *  3. Back up the file before writing.
+ *  4. Append to the parsed structure; never regenerate from scratch.
+ *  5. Write atomically (temp + rename).
+ *
+ * No electron imports — unit-testable standalone.
+ */
+import { execSync } from 'child_process';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+
+type VdfValue = string | number | VdfMap;
+interface VdfMap { [key: string]: VdfValue; }
+
+// ── Binary VDF parse / serialize ────────────────────────────────────────
+
+export function parseVdf(buf: Buffer): VdfMap {
+  let off = 0;
+  const readCStr = (): string => {
+    const start = off;
+    while (off < buf.length && buf[off] !== 0x00) off++;
+    const s = buf.slice(start, off).toString('utf8');
+    off++; // skip null terminator
+    return s;
+  };
+  const readMap = (): VdfMap => {
+    const obj: VdfMap = {};
+    while (off < buf.length) {
+      const type = buf[off++];
+      if (type === 0x08) return obj;
+      const key = readCStr();
+      if (type === 0x00) obj[key] = readMap();
+      else if (type === 0x01) obj[key] = readCStr();
+      else if (type === 0x02) { obj[key] = buf.readInt32LE(off); off += 4; }
+      else throw new Error(`Unsupported VDF type 0x${type.toString(16)} at offset ${off - 1}`);
+    }
+    throw new Error('Unexpected end of VDF (missing 0x08 terminator)');
+  };
+  return readMap();
+}
+
+export function serializeVdf(map: VdfMap): Buffer {
+  const parts: Buffer[] = [];
+  const key = (k: string) => { parts.push(Buffer.from(k, 'utf8')); parts.push(Buffer.from([0x00])); };
+  for (const [k, v] of Object.entries(map)) {
+    if (v !== null && typeof v === 'object') {
+      parts.push(Buffer.from([0x00])); key(k); parts.push(serializeVdf(v));
+    } else if (typeof v === 'string') {
+      parts.push(Buffer.from([0x01])); key(k);
+      parts.push(Buffer.from(v, 'utf8')); parts.push(Buffer.from([0x00]));
+    } else if (typeof v === 'number') {
+      parts.push(Buffer.from([0x02])); key(k);
+      const b = Buffer.alloc(4); b.writeInt32LE(v | 0, 0); parts.push(b);
+    }
+  }
+  parts.push(Buffer.from([0x08]));
+  return Buffer.concat(parts);
+}
+
+// Steam's shortcut appid: crc32(exe + appname) with the high bit set.
+function crc32(str: string): number {
+  let crc = ~0;
+  const bytes = Buffer.from(str, 'utf8');
+  for (let i = 0; i < bytes.length; i++) {
+    crc ^= bytes[i];
+    for (let j = 0; j < 8; j++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+  }
+  return (~crc) >>> 0;
+}
+
+export function shortcutAppId(exe: string, appName: string): number {
+  return (crc32(exe + appName) | 0x80000000) | 0; // signed int32
+}
+
+// ── Steam install discovery ─────────────────────────────────────────────
+
+export function findSteamRoot(): string | null {
+  if (process.platform === 'win32') {
+    const candidates = [
+      path.join(process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)', 'Steam'),
+      path.join(process.env['ProgramFiles'] || 'C:\\Program Files', 'Steam'),
+    ];
+    for (const c of candidates) if (fs.existsSync(path.join(c, 'steam.exe'))) return c;
+    try {
+      const out = execSync('reg query "HKCU\\Software\\Valve\\Steam" /v SteamPath', { encoding: 'utf8' });
+      const m = out.match(/SteamPath\s+REG_SZ\s+(.+)/);
+      if (m) return path.normalize(m[1].trim());
+    } catch { /* not in registry */ }
+    return null;
+  }
+  if (process.platform === 'linux') {
+    const candidates = [
+      path.join(os.homedir(), '.steam', 'steam'),
+      path.join(os.homedir(), '.local', 'share', 'Steam'),
+      path.join(os.homedir(), '.var', 'app', 'com.valvesoftware.Steam', 'data', 'Steam'),
+    ];
+    return candidates.find((c) => fs.existsSync(path.join(c, 'userdata'))) || null;
+  }
+  if (process.platform === 'darwin') {
+    const p = path.join(os.homedir(), 'Library', 'Application Support', 'Steam');
+    return fs.existsSync(p) ? p : null;
+  }
+  return null;
+}
+
+interface SteamUser { user: string; shortcutsPath: string; configDir: string; mtime: number; }
+
+export function findSteamUsers(root = findSteamRoot()): SteamUser[] {
+  if (!root) return [];
+  const userdata = path.join(root, 'userdata');
+  if (!fs.existsSync(userdata)) return [];
+  const users: SteamUser[] = [];
+  for (const d of fs.readdirSync(userdata)) {
+    if (d === '0' || d === 'anonymous') continue;
+    const configDir = path.join(userdata, d, 'config');
+    if (!fs.existsSync(configDir)) continue;
+    let mtime = 0;
+    try { mtime = fs.statSync(configDir).mtimeMs; } catch { /* ignore */ }
+    users.push({ user: d, shortcutsPath: path.join(configDir, 'shortcuts.vdf'), configDir, mtime });
+  }
+  // Most recently active user first
+  return users.sort((a, b) => b.mtime - a.mtime);
+}
+
+export function isSteamRunning(): boolean {
+  try {
+    if (process.platform === 'win32') {
+      const out = execSync('tasklist /FI "IMAGENAME eq steam.exe" /NH', { encoding: 'utf8' });
+      return /steam\.exe/i.test(out);
+    }
+    const out = execSync('pgrep -x steam steamwebhelper 2>/dev/null || pgrep -i steam 2>/dev/null || true', {
+      encoding: 'utf8', shell: '/bin/sh',
+    });
+    return out.trim().length > 0;
+  } catch {
+    return false;
+  }
+}
+
+// ── Add non-Steam game ──────────────────────────────────────────────────
+
+export interface AddResult {
+  ok: boolean;
+  error?: string;
+  appId?: number;
+  appName?: string;
+  alreadyPresent?: boolean;
+  backupPath?: string;
+  targetUser?: string;
+}
+
+export function buildShortcutEntry(exePath: string, appName: string, startDir?: string, tags: string[] = []): VdfMap {
+  const quotedExe = `"${exePath}"`;
+  const dir = startDir || path.dirname(exePath);
+  const tagMap: VdfMap = {};
+  tags.forEach((t, i) => { tagMap[String(i)] = t; });
+  // Field order mirrors what Steam itself writes (see a real entry).
+  return {
+    appid: shortcutAppId(quotedExe, appName),
+    AppName: appName,
+    Exe: quotedExe,
+    StartDir: dir.endsWith(path.sep) ? dir : dir + path.sep,
+    icon: '',
+    ShortcutPath: '',
+    LaunchOptions: '',
+    IsHidden: 0,
+    AllowDesktopConfig: 1,
+    AllowOverlay: 1,
+    OpenVR: 0,
+    Devkit: 0,
+    DevkitGameID: '',
+    DevkitOverrideAppID: 0,
+    LastPlayTime: 0,
+    FlatpakAppID: '',
+    sortas: '',
+    tags: tagMap,
+  };
+}
+
+export function addNonSteamGame(exePath: string, appName: string, opts: { startDir?: string; tags?: string[] } = {}): AddResult {
+  if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
+  if (isSteamRunning()) {
+    return { ok: false, error: 'Steam is running. Fully exit Steam (right-click the tray icon → Exit), then try again — Steam overwrites shortcuts on exit.' };
+  }
+
+  const users = findSteamUsers();
+  if (!users.length) return { ok: false, error: 'No Steam user profile found. Is Steam installed and have you signed in at least once?' };
+  const target = users[0]; // most recently active
+
+  try {
+    // Load existing (or start a fresh, empty shortcuts map)
+    let root: VdfMap;
+    let original: Buffer | null = null;
+    if (fs.existsSync(target.shortcutsPath)) {
+      original = fs.readFileSync(target.shortcutsPath);
+      root = parseVdf(original);
+
+      // SAFETY GATE: our serializer must reproduce the existing file exactly.
+      const reserialized = serializeVdf(root);
+      if (!reserialized.equals(original)) {
+        return {
+          ok: false,
+          error: 'Aborted for safety: could not reproduce the existing shortcuts.vdf byte-for-byte, so writing might corrupt it. No changes made.',
+        };
+      }
+    } else {
+      root = { shortcuts: {} };
+    }
+
+    const shortcuts = (root.shortcuts as VdfMap) || (root.shortcuts = {} as VdfMap);
+
+    // Duplicate check: same Exe already present?
+    const quotedExe = `"${exePath}"`;
+    for (const entry of Object.values(shortcuts)) {
+      if (entry && typeof entry === 'object' && (entry as VdfMap).Exe === quotedExe) {
+        return { ok: true, alreadyPresent: true, appName, targetUser: target.user, appId: (entry as VdfMap).appid as number };
+      }
+    }
+
+    // Back up before writing
+    let backupPath: string | undefined;
+    if (original) {
+      backupPath = `${target.shortcutsPath}.bak-${Date.now()}`;
+      fs.writeFileSync(backupPath, original);
+    }
+
+    // Append with the next numeric index
+    const nextIndex = Object.keys(shortcuts).length;
+    const entry = buildShortcutEntry(exePath, appName, opts.startDir, opts.tags);
+    shortcuts[String(nextIndex)] = entry;
+
+    // Atomic write
+    const out = serializeVdf(root);
+    const tmp = `${target.shortcutsPath}.tmp`;
+    fs.writeFileSync(tmp, out);
+    fs.renameSync(tmp, target.shortcutsPath);
+
+    return { ok: true, appId: entry.appid as number, appName, backupPath, targetUser: target.user };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}

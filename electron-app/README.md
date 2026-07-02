@@ -3,6 +3,31 @@
 Native desktop rewrite of the Flask/browser app in the parent folder. The
 Python app remains untouched and working; this is built alongside it.
 
+## Stage 5: Add to Steam (safe shortcuts.vdf writing)
+
+The exe picker now offers **Add to Steam** alongside Desktop Shortcut. This
+writes Steam's binary `shortcuts.vdf` directly — the feature that historically
+wiped libraries — with a safety model that makes corruption effectively
+impossible:
+
+1. Refuses to write while Steam is running (Steam overwrites on exit).
+2. Before writing, re-serializes the EXISTING file and requires a byte-for-byte
+   match with the original. If our serializer can't reproduce this Steam's
+   exact format, it aborts — never corrupts.
+3. Backs up `shortcuts.vdf` (timestamped `.bak`) before writing.
+4. Appends to the parsed structure; never regenerates from scratch.
+5. Writes atomically (temp + rename), and de-dupes by exe path.
+
+Own binary-VDF parser/serializer in `src/steam.ts` (no dependency). Verified
+against a real Steam install: existing non-Steam game preserved, new game
+added, Steam reopened and accepted the file with both entries intact.
+
+## Stage 4: gamepad navigation (Steam Deck Game Mode)
+
+The game grid is controller-navigable: D-pad / left stick moves the focus ring
+(column-aware), **A** opens the focused game's detail, **B** backs out of any
+modal. Activates automatically when a gamepad connects.
+
 ## Stage 2.5: desktop shortcuts for PC games
 
 - On an installed (extracted) PC game's detail dialog, **Create Shortcut…**

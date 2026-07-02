@@ -144,6 +144,13 @@ input[type="search"] { width: 220px; }
   transition: transform 0.1s ease, border-color 0.1s ease;
 }
 .game-card:hover { transform: translateY(-3px); border-color: var(--accent); }
+/* Gamepad focus ring (Steam Deck / controller navigation) */
+.game-card.gp-focus {
+  border-color: var(--accent);
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  transform: translateY(-3px);
+}
 
 /* Aspect ratio lives on a plain div: replaced elements (img) without a
    loaded src don't propagate their aspect-ratio height into grid row

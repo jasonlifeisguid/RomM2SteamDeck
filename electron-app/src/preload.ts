@@ -31,6 +31,8 @@ contextBridge.exposeInMainWorld('r2sd', {
   getPlatform: () => ipcRenderer.invoke('app:platform'),
   listExes: (romId: number) => ipcRenderer.invoke('game:listExes', romId),
   createShortcut: (exePath: string, gameName: string) => ipcRenderer.invoke('shortcut:create', exePath, gameName),
+  steamStatus: () => ipcRenderer.invoke('steam:status'),
+  addToSteam: (exePath: string, gameName: string) => ipcRenderer.invoke('steam:add', exePath, gameName),
 
   // Background-refresh + progress events
   onPlatformsUpdated: (cb: (payload: unknown) => void) =>

@@ -6,6 +6,7 @@ import * as config from './config';
 import * as cache from './cache';
 import * as downloads from './downloads';
 import * as shortcuts from './shortcuts';
+import * as steam from './steam';
 
 // Explicit userData dir. The Electron default (productName "RomM2SteamDeck")
 // collides case-insensitively on Windows with the Python app's
@@ -214,6 +215,16 @@ function registerIpc(): void {
   });
   ipcMain.handle('shortcut:create', (_e, exePath: string, gameName: string) =>
     shortcuts.createShortcut(exePath, gameName)
+  );
+
+  // Add to Steam (safe shortcuts.vdf writing)
+  ipcMain.handle('steam:status', () => ({
+    found: steam.findSteamRoot() !== null,
+    running: steam.isSteamRunning(),
+    users: steam.findSteamUsers().length,
+  }));
+  ipcMain.handle('steam:add', (_e, exePath: string, appName: string) =>
+    steam.addNonSteamGame(exePath, appName, { tags: ['RomM'] })
   );
 
   ipcMain.handle('downloads:sync', (_e, platformId: number) => {
