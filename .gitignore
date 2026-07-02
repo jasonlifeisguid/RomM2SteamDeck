@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+build/
+dist/
+
+# Runtime artifacts (dev mode writes these into the project dir)
+romm2steamdeck.db
+system.log
+
+# Claude Code local settings
+.claude/
+
+# Electron app (has its own .gitignore too, but belt and suspenders)
+electron-app/node_modules/
+electron-app/dist/
+electron-app/out/

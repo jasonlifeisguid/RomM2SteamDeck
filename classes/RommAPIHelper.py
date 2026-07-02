@@ -1,0 +1,239 @@
+import requests
+from base64 import b64encode
+import os
+import urllib.parse
+import logging
+
+# Get the system logger
+logger = logging.getLogger("system_logger")
+
+class RommAPIHelper:
+    # Default timeout for API requests (seconds)
+    REQUEST_TIMEOUT = 30
+    
+    def __init__(self, api_base_url):
+        self.api_base_url = api_base_url        
+    
+    def login(self, username, password):
+        # RomM accepts HTTP Basic auth on every request; no token exchange needed
+        auth_string = f"{username}:{password}"
+        self.auth_encoded = b64encode(auth_string.encode()).decode()
+
+    # Heartbeat
+    def getRommHeartbeat(self):
+        # Prepare URL
+        url = self.api_base_url + '/heartbeat'
+
+        # Prepare Headers
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {self.auth_encoded}"
+        }
+
+        # Do HTTP GET Request
+        response = requests.get(url, headers=headers, timeout=self.REQUEST_TIMEOUT)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Heartbeat error: {response.status_code} {response.text}")
+            return None
+    
+    
+    def getCollections(self):
+
+        # Prepare URL
+        url = self.api_base_url + '/collections/'
+
+        # Prepare Headers
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {self.auth_encoded}"
+        }              
+
+        # Do HTTP GET Request
+        response = requests.get(url, headers=headers, timeout=self.REQUEST_TIMEOUT)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Get collections error: {response.status_code} {response.text}")
+            return None
+
+    def getCollectionByID(self, collectionID):
+
+        # Prepare URL
+        url = self.api_base_url + '/collections/' + str(collectionID)
+
+        # Prepare Headers
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {self.auth_encoded}"
+        }              
+
+        # Do HTTP GET Request
+        response = requests.get(url, headers=headers, timeout=self.REQUEST_TIMEOUT)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Get collection {collectionID} error: {response.status_code} {response.text}")
+            return None
+
+    
+    def getPlatforms(self):
+        # Prepare URL
+        url = self.api_base_url + '/platforms/'
+
+        # Prepare Headers
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {self.auth_encoded}"
+        }  
+
+        # Do HTTP GET Request
+        response = requests.get(url, headers=headers, timeout=self.REQUEST_TIMEOUT)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Get platforms error: {response.status_code} {response.text}")
+            return []
+    
+    def getRomByID(self, romID):
+        # Prepare URL
+        url = self.api_base_url + '/roms/' + str(romID)
+
+        # Prepare Headers
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {self.auth_encoded}"
+        }  
+
+        # Do HTTP GET Request
+        response = requests.get(url, headers=headers, timeout=self.REQUEST_TIMEOUT)
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            logger.error(f"Get ROM {romID} error: {response.status_code} {response.text}")
+            return None
+
+    def getRomsByPlatform(self, platform_id, page_size=500):
+        """Fetch all ROMs for a specific platform, paginating past the server page limit."""
+        headers = {
+            "accept": "application/json",
+            "Authorization": f"Basic {self.auth_encoded}"
+        }
+
+        roms = []
+        offset = 0
+        total = None
+
+        while total is None or offset < total:
+            # RomM API uses platform_ids (plural) for filtering; limit is capped server-side
+            url = (f"{self.api_base_url}/roms?platform_ids={platform_id}"
+                   f"&order_by=name&order_dir=asc&limit={page_size}&offset={offset}")
+
+            response = requests.get(url, headers=headers, timeout=self.REQUEST_TIMEOUT)
+
+            if response.status_code != 200:
+                logger.error(f"Get ROMs for platform {platform_id} error: {response.status_code} {response.text}")
+                break
+
+            data = response.json()
+            # Older RomM versions returned a plain list (no pagination envelope)
+            if isinstance(data, list):
+                roms.extend(data)
+                break
+
+            items = data.get('items', [])
+            total = data.get('total', 0)
+            roms.extend(items)
+
+            if not items:
+                break
+            offset += len(items)
+
+        return roms
+
+    def downloadRom(self, romID, romFilename, download_path, progress_callback=None, cancel_event=None):
+        # Prepare URL — encode filename so brackets, parens, etc. don't cause 404
+        url = self.api_base_url + '/roms/' + str(romID) + '/content/' + urllib.parse.quote(str(romFilename), safe='')
+
+        # Prepare Headers
+        headers = {
+            "accept": "application/json",
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Authorization": f"Basic {self.auth_encoded}"
+        }  
+
+        logger.info(f"Downloading ROM {romID}: {url}")
+
+        # Do HTTP GET Request with streaming.
+        # Tuple timeout = (connect, per-read); a stalled connection raises instead of hanging the thread forever.
+        response = requests.get(url, headers=headers, stream=True, timeout=(10, 60))
+
+        if response.status_code == 200:
+            # Get total file size
+            total_size = int(response.headers.get('content-length', 0))
+            
+            # Get Filename from HTTP-Request Response
+            content_disposition = response.headers.get("content-disposition")
+            if content_disposition and "filename=" in content_disposition:
+                filename = content_disposition.split("filename=")[1].strip('"')
+                filename = urllib.parse.unquote(filename)  # Decodes %20 to spaces
+            else:
+                filename = romFilename
+
+            # make sure the Download Folder exists | If not, create it
+            os.makedirs(download_path, exist_ok=True)
+
+            # build file-path
+            file_path = os.path.join(download_path, filename)
+
+            # Check if File exists and is complete
+            if os.path.exists(file_path):
+                existing_size = os.path.getsize(file_path)
+                if total_size > 0 and existing_size == total_size:
+                    logger.info(f"File already exists and is complete: {file_path} - Download skipped.")
+                    return {"skipped": True, "path": file_path, "filename": filename}
+                else:
+                    # Partial file - remove it and re-download
+                    logger.info(f"Removing partial file ({existing_size}/{total_size} bytes): {file_path}")
+                    os.remove(file_path)
+
+            # Download File in Chunks and save it
+            downloaded = 0
+            chunk_size = 1024 * 1024  # 1MB chunks for better progress updates
+
+            with open(file_path, "wb") as file:
+                for chunk in response.iter_content(chunk_size=chunk_size):
+                    # Check for cancellation before each chunk
+                    if cancel_event and cancel_event.is_set():
+                        response.close()
+                        logger.info(f"Download cancelled for ROM {romID}")
+                        # Remove the partial file
+                        file.close()
+                        if os.path.exists(file_path):
+                            os.remove(file_path)
+                        return {"cancelled": True}
+                    if chunk:
+                        file.write(chunk)
+                        downloaded += len(chunk)
+
+                        # Call progress callback if provided
+                        if progress_callback and total_size > 0:
+                            progress = int((downloaded / total_size) * 100)
+                            progress_callback(downloaded, total_size, progress)
+
+            return {"skipped": False, "path": file_path, "filename": filename}
+        else:
+            # Something went wrong
+            logger.error(f"Download error for ROM {romID}: {response.status_code} {response.text}")
+            raise Exception(f"Download failed: {response.status_code} {response.text}") 
