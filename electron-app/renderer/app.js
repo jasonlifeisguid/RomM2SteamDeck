@@ -529,6 +529,13 @@ function pathSep(sample) {
   return sample.includes('\\') ? '\\' : '/';
 }
 
+function markDirty() {
+  $('pf-dirty').textContent = '● Unsaved changes';
+}
+function clearDirty() {
+  $('pf-dirty').textContent = '';
+}
+
 function buildPlatformRows() {
   const rows = $('pf-rows');
   rows.innerHTML = '';
@@ -553,6 +560,7 @@ function buildPlatformRows() {
     const paths = document.createElement('div');
     paths.className = 'pf-paths';
 
+    // Download-folder field: used only when NOT extracting
     const folderRow = document.createElement('span');
     folderRow.className = 'path-row';
     const folderInput = document.createElement('input');
@@ -560,34 +568,36 @@ function buildPlatformRows() {
     folderInput.className = 'pf-folder';
     folderInput.placeholder = 'Download folder (e.g. roms/' + (p.fs_slug || 'slug') + ')';
     folderInput.value = setup.folder;
+    folderInput.addEventListener('input', markDirty);
     const folderBrowse = document.createElement('button');
     folderBrowse.className = 'icon-btn';
     folderBrowse.innerHTML = '&#128193;';
     folderBrowse.title = 'Browse';
     folderBrowse.addEventListener('click', async () => {
       const picked = await window.r2sd.pickFolder(`Folder for ${p.name}`);
-      if (picked) folderInput.value = picked;
+      if (picked) { folderInput.value = picked; markDirty(); }
     });
     folderRow.append(folderInput, folderBrowse);
     paths.appendChild(folderRow);
 
+    // Install-path field: used only when extracting
     const installRow = document.createElement('span');
     installRow.className = 'path-row';
     const installInput = document.createElement('input');
     installInput.type = 'text';
     installInput.className = 'pf-install';
-    installInput.placeholder = 'Install path for extracted games';
+    installInput.placeholder = 'Install path — extracted game folders go here';
     installInput.value = setup.installPaths[0] || '';
+    installInput.addEventListener('input', markDirty);
     const installBrowse = document.createElement('button');
     installBrowse.className = 'icon-btn';
     installBrowse.innerHTML = '&#128193;';
     installBrowse.title = 'Browse';
     installBrowse.addEventListener('click', async () => {
       const picked = await window.r2sd.pickFolder(`Install path for ${p.name}`);
-      if (picked) installInput.value = picked;
+      if (picked) { installInput.value = picked; markDirty(); }
     });
     installRow.append(installInput, installBrowse);
-    installRow.style.display = setup.autoExtract ? '' : 'none';
     paths.appendChild(installRow);
 
     const extract = document.createElement('label');
@@ -596,9 +606,13 @@ function buildPlatformRows() {
     check.type = 'checkbox';
     check.className = 'pf-autoextract';
     check.checked = setup.autoExtract;
-    check.addEventListener('change', () => {
+    // Show only the field that applies to this platform's mode
+    const applyMode = () => {
+      folderRow.style.display = check.checked ? 'none' : '';
       installRow.style.display = check.checked ? '' : 'none';
-    });
+    };
+    applyMode();
+    check.addEventListener('change', () => { applyMode(); markDirty(); });
     extract.append(check, document.createTextNode('Extract'));
 
     row.append(name, paths, extract);
@@ -611,6 +625,7 @@ async function openPlatformsModal() {
   $('pf-base').value = state.config.basePath || '';
   $('pf-staging').value = state.config.stagingPath || '';
   buildPlatformRows();
+  clearDirty();
   $('platforms-modal').hidden = false;
 }
 
@@ -634,7 +649,7 @@ async function savePlatformsModal() {
     stagingPath: $('pf-staging').value.trim(),
   });
   await reloadConfig();
-  closePlatformsModal();
+  clearDirty();
   toast('Platform folders saved', 'success');
 }
 
@@ -738,14 +753,16 @@ $('btn-platforms').addEventListener('click', () => { closeSettings(); openPlatfo
 $('pf-close').addEventListener('click', closePlatformsModal);
 $('platforms-backdrop').addEventListener('click', closePlatformsModal);
 $('pf-save').addEventListener('click', savePlatformsModal);
-$('pf-autofill').addEventListener('click', autofillPlatformFolders);
+$('pf-autofill').addEventListener('click', () => { autofillPlatformFolders(); markDirty(); });
+$('pf-base').addEventListener('input', markDirty);
+$('pf-staging').addEventListener('input', markDirty);
 $('pf-base-browse').addEventListener('click', async () => {
   const picked = await window.r2sd.pickFolder('Base folder for ROMs');
-  if (picked) $('pf-base').value = picked;
+  if (picked) { $('pf-base').value = picked; markDirty(); }
 });
 $('pf-staging-browse').addEventListener('click', async () => {
   const picked = await window.r2sd.pickFolder('Staging folder for archives');
-  if (picked) $('pf-staging').value = picked;
+  if (picked) { $('pf-staging').value = picked; markDirty(); }
 });
 
 document.addEventListener('keydown', (e) => {
