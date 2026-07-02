@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' file:; style-src 'self'">
+  <title>RomM2SteamDeck</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Sidebar: platforms -->
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <span class="brand">R2SD</span>
+        <button id="btn-settings" class="icon-btn" title="Settings">&#9881;</button>
+      </div>
+      <nav id="platform-list" class="platform-list">
+        <p class="muted pad">Loading platforms&hellip;</p>
+      </nav>
+      <div class="sidebar-footer">
+        <span id="cache-status" class="muted small"></span>
+      </div>
+    </aside>
+
+    <!-- Main: game grid -->
+    <main id="content">
+      <header id="toolbar">
+        <h1 id="platform-title">Library</h1>
+        <div class="toolbar-controls">
+          <input id="search" type="search" placeholder="Search games&hellip;" autocomplete="off">
+          <select id="sort">
+            <option value="name">Name</option>
+            <option value="size">Size</option>
+          </select>
+          <button id="btn-refresh" class="icon-btn" title="Refresh from server">&#8635;</button>
+        </div>
+      </header>
+      <div id="grid-status" class="muted pad" hidden></div>
+      <section id="game-grid" class="game-grid"></section>
+    </main>
+  </div>
+
+  <!-- Settings modal -->
+  <div id="settings-modal" class="modal" hidden>
+    <div class="modal-backdrop"></div>
+    <div class="modal-card">
+      <h2>Settings</h2>
+      <label>RomM Server URL
+        <input id="cfg-url" type="text" placeholder="https://romm.example.com" autocomplete="off">
+      </label>
+      <label>Username
+        <input id="cfg-username" type="text" autocomplete="off">
+      </label>
+      <label>Password
+        <input id="cfg-password" type="password" placeholder="(unchanged)" autocomplete="off">
+      </label>
+      <div id="cfg-test-result" class="small"></div>
+      <div class="modal-actions">
+        <button id="btn-clear-cache" class="secondary">Clear Cache</button>
+        <span class="spacer"></span>
+        <button id="btn-test" class="secondary">Test Connection</button>
+        <button id="btn-save" class="primary">Save</button>
+        <button id="btn-close-settings" class="secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
