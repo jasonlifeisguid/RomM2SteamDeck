@@ -5,6 +5,7 @@ import { RommClient, RommPlatform, RommRom } from './romm';
 import * as config from './config';
 import * as cache from './cache';
 import * as downloads from './downloads';
+import * as shortcuts from './shortcuts';
 
 // Explicit userData dir. The Electron default (productName "RomM2SteamDeck")
 // collides case-insensitively on Windows with the Python app's
@@ -201,6 +202,19 @@ function registerIpc(): void {
   ipcMain.handle('download:cancel', (_e, romId: number) => downloads.cancelDownload(romId));
 
   ipcMain.handle('download:delete', (_e, romId: number) => downloads.deleteDownload(romId));
+
+  // Host OS (renderer gates the Steam Deck tip on this)
+  ipcMain.handle('app:platform', () => process.platform);
+
+  // Desktop shortcuts for extracted PC games
+  ipcMain.handle('game:listExes', (_e, romId: number) => {
+    const record = downloads.listDownloads().find((r) => r.romId === romId);
+    if (!record || !record.filePath) return [];
+    return shortcuts.listExes(record.filePath);
+  });
+  ipcMain.handle('shortcut:create', (_e, exePath: string, gameName: string) =>
+    shortcuts.createShortcut(exePath, gameName)
+  );
 
   ipcMain.handle('downloads:sync', (_e, platformId: number) => {
     const cached = cache.readCache<RommRom[]>(`roms-${platformId}`);

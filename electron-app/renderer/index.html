@@ -60,6 +60,7 @@
             <select id="detail-install-path" hidden></select>
             <button id="btn-dl" class="primary" hidden>&#8681; Download</button>
             <button id="btn-dl-cancel" class="secondary" hidden>Cancel</button>
+            <button id="btn-shortcut" class="secondary" hidden>Create Shortcut&hellip;</button>
             <button id="btn-dl-delete" class="secondary danger" hidden>Delete from disk</button>
             <span id="detail-dl-status" class="small muted"></span>
           </div>
@@ -104,6 +105,25 @@
           </label>
         </div>
         <div id="pf-rows" class="pf-rows"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Exe picker modal (create desktop shortcut) -->
+  <div id="exe-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="exe-backdrop"></div>
+    <div class="modal-card exe-card">
+      <h2>Create Desktop Shortcut</h2>
+      <p class="small muted" style="margin-bottom:10px">Select the executable to launch:</p>
+      <div id="exe-list" class="exe-list"></div>
+      <div id="exe-steamdeck-tip" class="steamdeck-tip" hidden>
+        After the shortcut is created, find it on the desktop, right-click it, and choose
+        <strong>Add to Steam</strong> to add the game to your Steam library.
+      </div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="exe-cancel" class="secondary">Cancel</button>
+        <button id="exe-create" class="primary" disabled>Create Shortcut</button>
       </div>
     </div>
   </div>

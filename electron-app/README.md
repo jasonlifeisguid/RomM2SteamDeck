@@ -3,6 +3,20 @@
 Native desktop rewrite of the Flask/browser app in the parent folder. The
 Python app remains untouched and working; this is built alongside it.
 
+## Stage 2.5: desktop shortcuts for PC games
+
+- On an installed (extracted) PC game's detail dialog, **Create Shortcut…**
+  scans the game folder for `.exe` files and lets you pick one (launcher
+  listed first). Creates a desktop shortcut: `.lnk` on Windows, `.desktop`
+  on Linux/Steam Deck, `.command` on macOS.
+- On Steam Deck the dialog shows the tip: right-click the shortcut →
+  **Add to Steam**. This is the *safe* path — Steam does its own
+  shortcuts.vdf write, so it can't corrupt the library.
+- Windows `.lnk` creation passes paths via environment variables, never
+  interpolated into the PowerShell command (no injection).
+- Direct programmatic "Add to Steam" (writing shortcuts.vdf) is deliberately
+  NOT here — deferred pending the library-wipe test.
+
 ## Stage 2: downloads & extraction
 
 - **Streaming downloads** with real-time progress on the card and in the

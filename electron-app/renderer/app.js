@@ -440,6 +440,7 @@ function refreshDetailActions() {
   const dlBtn = $('btn-dl');
   const cancelBtn = $('btn-dl-cancel');
   const deleteBtn = $('btn-dl-delete');
+  const shortcutBtn = $('btn-shortcut');
   const statusEl = $('detail-dl-status');
   const bar = $('detail-dl-bar');
   const installSelect = $('detail-install-path');
@@ -460,6 +461,8 @@ function refreshDetailActions() {
   dlBtn.hidden = Boolean(progress || record);
   cancelBtn.hidden = !progress;
   deleteBtn.hidden = !record || Boolean(progress);
+  // Shortcut maker: only for installed (extracted) PC games
+  shortcutBtn.hidden = !(record && setup.autoExtract && !progress);
   bar.hidden = !progress;
 
   if (progress) {
@@ -521,6 +524,60 @@ function openDetail(rom) {
 function closeDetail() {
   $('detail-modal').hidden = true;
   state.detailRom = null;
+}
+
+// ── Exe picker / desktop shortcut ───────────────────────
+
+let exeSelected = null;
+let exePickerRom = null;
+
+async function openExePicker(rom) {
+  exePickerRom = rom;
+  exeSelected = null;
+  $('exe-create').disabled = true;
+  $('exe-list').innerHTML = '<p class="muted small">Scanning for executables…</p>';
+  // The "right-click → Add to Steam" tip only applies on Linux/Steam Deck
+  const platform = await window.r2sd.getPlatform();
+  $('exe-steamdeck-tip').hidden = platform !== 'linux';
+  $('exe-modal').hidden = false;
+
+  const exes = await window.r2sd.listExes(rom.id);
+  if (!exes.length) {
+    $('exe-list').innerHTML = '<p class="error small">No .exe files found in the installed folder.</p>';
+    return;
+  }
+  $('exe-list').innerHTML = '';
+  exes.forEach((exe, i) => {
+    const label = document.createElement('label');
+    label.className = 'exe-option';
+    const radio = document.createElement('input');
+    radio.type = 'radio';
+    radio.name = 'exe';
+    radio.value = String(i);
+    radio.addEventListener('change', () => {
+      exeSelected = exe;
+      $('exe-create').disabled = false;
+      document.querySelectorAll('.exe-option').forEach((el, j) => el.classList.toggle('selected', j === i));
+    });
+    const span = document.createElement('span');
+    span.textContent = exe.relativePath;
+    label.append(radio, span);
+    $('exe-list').appendChild(label);
+  });
+}
+
+function closeExePicker() {
+  $('exe-modal').hidden = true;
+  exePickerRom = null;
+  exeSelected = null;
+}
+
+async function createShortcut() {
+  if (!exeSelected || !exePickerRom) return;
+  const res = await window.r2sd.createShortcut(exeSelected.path, exePickerRom.name || exePickerRom.fs_name);
+  closeExePicker();
+  if (res.error) toast(res.error, 'error');
+  else toast('Desktop shortcut created', 'success');
 }
 
 // ── Platform folders modal ──────────────────────────────
@@ -748,6 +805,10 @@ $('detail-backdrop').addEventListener('click', closeDetail);
 $('btn-dl').addEventListener('click', () => state.detailRom && startDownloadFor(state.detailRom));
 $('btn-dl-cancel').addEventListener('click', () => state.detailRom && window.r2sd.cancelDownload(state.detailRom.id));
 $('btn-dl-delete').addEventListener('click', () => state.detailRom && deleteDownloadFor(state.detailRom));
+$('btn-shortcut').addEventListener('click', () => state.detailRom && openExePicker(state.detailRom));
+$('exe-cancel').addEventListener('click', closeExePicker);
+$('exe-backdrop').addEventListener('click', closeExePicker);
+$('exe-create').addEventListener('click', createShortcut);
 
 $('btn-platforms').addEventListener('click', () => { closeSettings(); openPlatformsModal(); });
 $('pf-close').addEventListener('click', closePlatformsModal);
@@ -767,6 +828,7 @@ $('pf-staging-browse').addEventListener('click', async () => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    closeExePicker();
     closeDetail();
     closeSettings();
     closePlatformsModal();

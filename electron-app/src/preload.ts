@@ -27,6 +27,11 @@ contextBridge.exposeInMainWorld('r2sd', {
   onDownloadEvent: (cb: (payload: unknown) => void) =>
     ipcRenderer.on('download:event', (_e, payload) => cb(payload)),
 
+  // Desktop shortcuts
+  getPlatform: () => ipcRenderer.invoke('app:platform'),
+  listExes: (romId: number) => ipcRenderer.invoke('game:listExes', romId),
+  createShortcut: (exePath: string, gameName: string) => ipcRenderer.invoke('shortcut:create', exePath, gameName),
+
   // Background-refresh + progress events
   onPlatformsUpdated: (cb: (payload: unknown) => void) =>
     ipcRenderer.on('library:platforms-updated', (_e, payload) => cb(payload)),
