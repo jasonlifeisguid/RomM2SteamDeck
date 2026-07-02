@@ -78,13 +78,13 @@
       <div class="pf-header">
         <h2>Platform Folders</h2>
         <div class="pf-header-actions">
-          <span id="pf-dirty" class="small" style="color:var(--accent)"></span>
+          <span id="pf-dirty" class="small"></span>
           <button id="pf-save" class="primary">Save</button>
           <button id="pf-close" class="secondary">Close</button>
         </div>
       </div>
       <div class="pf-scroll">
-        <p class="small muted" style="margin-bottom:12px">
+        <p class="small muted mb-12">
           Set where each platform's games go. Enable <strong>Extract</strong> for platforms whose
           games are archives that should be unpacked (e.g. Windows) — then set the install path where
           the extracted game folders should live.
@@ -114,7 +114,7 @@
     <div class="modal-backdrop" id="exe-backdrop"></div>
     <div class="modal-card exe-card">
       <h2>Add Game Shortcut</h2>
-      <p class="small muted" style="margin-bottom:10px">Select the executable to launch, then add it to Steam or create a desktop shortcut:</p>
+      <p class="small muted mb-10">Select the executable to launch, then add it to Steam or create a desktop shortcut:</p>
       <div id="exe-list" class="exe-list"></div>
       <div id="exe-steamdeck-tip" class="steamdeck-tip" hidden>
         After the shortcut is created, find it on the desktop, right-click it, and choose
@@ -136,7 +136,7 @@
   <div id="settings-modal" class="modal" hidden>
     <div class="modal-backdrop"></div>
     <div class="modal-card settings-card">
-      <h2>Settings <span id="cfg-version" class="small muted" style="font-weight:400"></span></h2>
+      <h2>Settings <span id="cfg-version" class="small muted"></span></h2>
       <label>RomM Server URL
         <input id="cfg-url" type="text" placeholder="https://romm.example.com" autocomplete="off">
       </label>

@@ -456,6 +456,10 @@ button.danger:hover { border-color: #f87171; }
 .muted { color: var(--text-muted); }
 .small { font-size: 0.75rem; }
 .pad { padding: 16px; }
+.mb-10 { margin-bottom: 10px; }
+.mb-12 { margin-bottom: 12px; }
+#pf-dirty { color: var(--accent); }
+#cfg-version { font-weight: 400; }
 .success { color: #4ade80; }
 .error { color: #f87171; }
 

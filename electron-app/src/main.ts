@@ -8,6 +8,17 @@ import * as downloads from './downloads';
 import * as shortcuts from './shortcuts';
 import * as steam from './steam';
 
+// Steam Deck / Linux: Electron's GPU process segfaults (SIGSEGV/SIGBUS) against
+// the Deck's Mesa/RADV driver, so the window never appears and the app crashes
+// on launch. Force software rendering there. --no-sandbox is also needed for
+// the SUID sandbox to work from an AppImage's read-only mount. Verified on a
+// real Steam Deck (SteamOS, Plasma Wayland + Game Mode/gamescope). These are
+// no-ops on Windows/macOS, which keep GPU acceleration and the sandbox.
+if (process.platform === 'linux') {
+  app.commandLine.appendSwitch('disable-gpu');
+  app.commandLine.appendSwitch('no-sandbox');
+}
+
 // Explicit userData dir. The Electron default (productName "RomM2SteamDeck")
 // collides case-insensitively on Windows with the Python app's
 // %APPDATA%\romm2steamdeck — the two apps merged into one directory and
