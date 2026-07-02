@@ -206,6 +206,7 @@ function registerIpc(): void {
 
   // Host OS (renderer gates the Steam Deck tip on this)
   ipcMain.handle('app:platform', () => process.platform);
+  ipcMain.handle('app:version', () => app.getVersion());
 
   // Desktop shortcuts for extracted PC games
   ipcMain.handle('game:listExes', (_e, romId: number) => {

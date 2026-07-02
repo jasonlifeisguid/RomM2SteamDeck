@@ -751,6 +751,7 @@ function autofillPlatformFolders() {
 
 async function openSettings() {
   const cfg = await window.r2sd.getConfig();
+  window.r2sd.getVersion().then((v) => { $('cfg-version').textContent = v ? `v${v}` : ''; });
   $('cfg-url').value = cfg.baseUrl;
   $('cfg-username').value = cfg.username;
   $('cfg-password').value = '';
