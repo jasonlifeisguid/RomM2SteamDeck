@@ -46,8 +46,8 @@ body {
 
 .platform-item {
   display: flex;
-  justify-content: space-between;
   align-items: center;
+  gap: 6px;
   width: 100%;
   padding: 9px 12px;
   border: none;
@@ -60,8 +60,23 @@ body {
 }
 .platform-item:hover { background: var(--bg-hover); }
 .platform-item.active { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+.platform-item .pname { flex: 1; min-width: 0; }
 .platform-item .count { color: var(--text-muted); font-size: 0.75rem; }
 .platform-item.active .count { color: var(--accent); }
+
+/* Pin toggle: visible when pinned, appears on row hover otherwise */
+.pin-btn {
+  background: none;
+  border: none;
+  padding: 0 2px;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+  cursor: pointer;
+  visibility: hidden;
+}
+.platform-item:hover .pin-btn { visibility: visible; }
+.pin-btn.pinned { visibility: visible; color: var(--accent); }
+.pin-btn:hover { color: var(--accent); }
 
 .sidebar-footer { padding: 10px 16px; border-top: 1px solid var(--border); min-height: 38px; }
 
@@ -205,6 +220,45 @@ button.primary { background: var(--accent); border-color: var(--accent); color: 
 button.primary:hover { filter: brightness(1.1); }
 button.secondary { background: var(--bg-card); color: var(--text); }
 button.secondary:hover { border-color: var(--accent); }
+
+/* ── Game detail modal ────────────────────────────────── */
+.detail-card {
+  width: 760px;
+  max-height: 85vh;
+  overflow-y: auto;
+}
+.detail-close { position: absolute; top: 14px; right: 14px; z-index: 1; }
+.detail-body { display: flex; gap: 20px; }
+.detail-cover {
+  width: 220px;
+  min-width: 220px;
+  border-radius: 8px;
+  align-self: flex-start;
+}
+.detail-info { flex: 1; min-width: 0; }
+.detail-info h2 { margin: 2px 32px 10px 0; font-size: 1.25rem; }
+.detail-facts { display: grid; grid-template-columns: auto 1fr; gap: 4px 14px; margin-bottom: 12px; }
+.detail-facts .fact-label { color: var(--text-muted); font-size: 0.8rem; }
+.detail-facts .fact-value { font-size: 0.8rem; word-break: break-all; }
+.detail-summary {
+  font-size: 0.85rem;
+  line-height: 1.5;
+  color: var(--text);
+  opacity: 0.9;
+  user-select: text;
+}
+.detail-screenshots {
+  display: flex;
+  gap: 10px;
+  overflow-x: auto;
+  margin-top: 16px;
+}
+.detail-screenshots:empty { margin-top: 0; }
+.detail-screenshots img {
+  height: 110px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+}
 
 /* ── Utility ──────────────────────────────────────────── */
 .muted { color: var(--text-muted); }

@@ -28,9 +28,14 @@
         <h1 id="platform-title">Library</h1>
         <div class="toolbar-controls">
           <input id="search" type="search" placeholder="Search games&hellip;" autocomplete="off">
-          <select id="sort">
+          <select id="genre-filter" title="Filter by genre">
+            <option value="">All genres</option>
+          </select>
+          <select id="sort" title="Sort order">
             <option value="name">Name</option>
             <option value="size">Size</option>
+            <option value="year">Release Year</option>
+            <option value="rating">Rating</option>
           </select>
           <button id="btn-refresh" class="icon-btn" title="Refresh from server">&#8635;</button>
         </div>
@@ -38,6 +43,23 @@
       <div id="grid-status" class="muted pad" hidden></div>
       <section id="game-grid" class="game-grid"></section>
     </main>
+  </div>
+
+  <!-- Game detail modal -->
+  <div id="detail-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="detail-backdrop"></div>
+    <div class="modal-card detail-card">
+      <button class="detail-close icon-btn" id="btn-close-detail" title="Close">&#10005;</button>
+      <div class="detail-body">
+        <div class="detail-cover cover-wrap"><img class="game-cover" alt=""></div>
+        <div class="detail-info">
+          <h2 id="detail-name"></h2>
+          <div id="detail-facts" class="detail-facts"></div>
+          <p id="detail-summary" class="detail-summary"></p>
+        </div>
+      </div>
+      <div id="detail-screenshots" class="detail-screenshots"></div>
+    </div>
   </div>
 
   <!-- Settings modal -->

@@ -15,7 +15,7 @@ contextBridge.exposeInMainWorld('r2sd', {
   // Library
   getPlatforms: (opts?: object) => ipcRenderer.invoke('library:platforms', opts),
   getRoms: (platformId: number, opts?: object) => ipcRenderer.invoke('library:roms', platformId, opts),
-  getCover: (romId: number, serverPath: string) => ipcRenderer.invoke('cover:get', romId, serverPath),
+  getAsset: (romId: number, serverPath: string) => ipcRenderer.invoke('asset:get', romId, serverPath),
 
   // Background-refresh + progress events
   onPlatformsUpdated: (cb: (payload: unknown) => void) =>

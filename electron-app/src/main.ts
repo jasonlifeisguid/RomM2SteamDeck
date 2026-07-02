@@ -5,6 +5,65 @@ import { RommClient, RommPlatform, RommRom } from './romm';
 import * as config from './config';
 import * as cache from './cache';
 
+// Explicit userData dir. The Electron default (productName "RomM2SteamDeck")
+// collides case-insensitively on Windows with the Python app's
+// %APPDATA%\romm2steamdeck — the two apps merged into one directory and
+// clobbered each other's config.json, and our JSON caches landed inside
+// Chromium's own "Cache" dir.
+const userDataDir = path.join(app.getPath('appData'), 'romm2steamdeck-app');
+app.setPath('userData', userDataDir);
+migrateLegacyUserData();
+
+/** One-time untangle of the shared %APPDATA%\romm2steamdeck directory. */
+function migrateLegacyUserData(): void {
+  const legacyDir = path.join(app.getPath('appData'), 'romm2steamdeck');
+  const legacyConfig = path.join(legacyDir, 'config.json');
+  const newConfig = path.join(userDataDir, 'config.json');
+  try {
+    if (!fs.existsSync(legacyConfig) || fs.existsSync(newConfig)) return;
+    const parsed = JSON.parse(fs.readFileSync(legacyConfig, 'utf-8'));
+    if (!parsed.baseUrl && !parsed.passwordEncrypted) return; // no Electron keys there
+
+    fs.mkdirSync(userDataDir, { recursive: true });
+    const ours = {
+      baseUrl: parsed.baseUrl ?? '',
+      username: parsed.username ?? '',
+      passwordEncrypted: parsed.passwordEncrypted ?? '',
+      theme: parsed.theme ?? 'oled-limited',
+      pinnedPlatforms: parsed.pinnedPlatforms ?? [],
+    };
+    fs.writeFileSync(newConfig, JSON.stringify(ours, null, 2), 'utf-8');
+
+    // Give the Python app back a clean config.json with only its keys
+    const pythonKeys: Record<string, unknown> = {};
+    for (const key of ['server', 'database']) {
+      if (parsed[key] !== undefined) pythonKeys[key] = parsed[key];
+    }
+    if (Object.keys(pythonKeys).length > 0) {
+      fs.writeFileSync(legacyConfig, JSON.stringify(pythonKeys, null, 4), 'utf-8');
+    }
+
+    // Move our asset + list caches over
+    const legacyCovers = path.join(legacyDir, 'covers');
+    if (fs.existsSync(legacyCovers) && !fs.existsSync(path.join(userDataDir, 'covers'))) {
+      fs.renameSync(legacyCovers, path.join(userDataDir, 'covers'));
+    }
+    const legacyCache = path.join(legacyDir, 'Cache'); // Chromium's dir, case-merged
+    const newCache = path.join(userDataDir, 'cache');
+    if (fs.existsSync(legacyCache)) {
+      fs.mkdirSync(newCache, { recursive: true });
+      for (const f of fs.readdirSync(legacyCache)) {
+        if (/^(platforms|roms-\d+)\.json$/.test(f)) {
+          fs.renameSync(path.join(legacyCache, f), path.join(newCache, f));
+        }
+      }
+    }
+    console.log('Migrated legacy userData out of', legacyDir);
+  } catch (err) {
+    console.error('Legacy userData migration failed:', err);
+  }
+}
+
 let mainWindow: BrowserWindow | null = null;
 
 function getClient(): RommClient {
@@ -118,10 +177,11 @@ function registerIpc(): void {
     return { roms, fromCache: false, fetchedAt: Date.now() };
   });
 
-  // Cover art: returns a local file path, fetching + caching on first request
-  ipcMain.handle('cover:get', async (_e, romId: number, serverPath: string) => {
+  // Server-hosted images (covers, screenshots): returns a local file path,
+  // fetching + caching on first request
+  ipcMain.handle('asset:get', async (_e, romId: number, serverPath: string) => {
     if (!serverPath) return null;
-    const file = cache.coverCachePath(romId, serverPath);
+    const file = cache.assetCachePath(romId, serverPath);
     if (fs.existsSync(file)) return file;
     const data = await getClient().getBinary(serverPath);
     if (!data) return null;

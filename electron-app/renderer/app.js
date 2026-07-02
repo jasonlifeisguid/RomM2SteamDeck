@@ -8,6 +8,8 @@ const state = {
   currentPlatformId: null,
   search: '',
   sort: 'name',
+  genre: '',
+  pinned: [],
 };
 
 // ── Helpers ─────────────────────────────────────────────
@@ -36,34 +38,78 @@ function setCacheStatus(fromCache, fetchedAt) {
     : `Up to date`;
 }
 
-// ── Platforms ───────────────────────────────────────────
+function romYear(rom) {
+  const ts = rom.metadatum?.first_release_date;
+  return ts ? new Date(ts).getFullYear() : null;
+}
+
+function romGenres(rom) {
+  return rom.metadatum?.genres || [];
+}
+
+function romRating(rom) {
+  return rom.metadatum?.average_rating ?? null;
+}
+
+async function setAssetSrc(img, romId, serverPath) {
+  if (!serverPath) return;
+  const file = await window.r2sd.getAsset(romId, serverPath);
+  if (file) img.src = 'file:///' + file.replace(/\\/g, '/');
+}
+
+// ── Platforms (with pinning) ────────────────────────────
+
+function sortedPlatforms() {
+  const withGames = state.platforms.filter((p) => (p.rom_count || 0) > 0);
+  const pinned = withGames.filter((p) => state.pinned.includes(p.id));
+  const rest = withGames.filter((p) => !state.pinned.includes(p.id));
+  const byName = (a, b) => a.name.localeCompare(b.name);
+  return [...pinned.sort(byName), ...rest.sort(byName)];
+}
 
 function renderPlatforms() {
   const list = $('platform-list');
   list.innerHTML = '';
-  const withGames = state.platforms
-    .filter((p) => (p.rom_count || 0) > 0)
-    .sort((a, b) => a.name.localeCompare(b.name));
+  const platforms = sortedPlatforms();
 
-  if (!withGames.length) {
+  if (!platforms.length) {
     list.innerHTML = '<p class="muted pad">No platforms found.</p>';
     return;
   }
 
-  for (const p of withGames) {
+  for (const p of platforms) {
+    const isPinned = state.pinned.includes(p.id);
     const btn = document.createElement('button');
     btn.className = 'platform-item' + (p.id === state.currentPlatformId ? ' active' : '');
     btn.addEventListener('click', () => selectPlatform(p.id));
 
+    const pin = document.createElement('span');
+    pin.className = 'pin-btn' + (isPinned ? ' pinned' : '');
+    pin.textContent = isPinned ? '★' : '☆'; // ★ / ☆
+    pin.title = isPinned ? 'Unpin platform' : 'Pin to top';
+    pin.addEventListener('click', (e) => {
+      e.stopPropagation();
+      togglePin(p.id);
+    });
+
     const name = document.createElement('span');
+    name.className = 'pname';
     name.textContent = p.name;
     const count = document.createElement('span');
     count.className = 'count';
     count.textContent = p.rom_count;
 
-    btn.append(name, count);
+    btn.append(pin, name, count);
     list.appendChild(btn);
   }
+}
+
+async function togglePin(platformId) {
+  state.pinned = state.pinned.includes(platformId)
+    ? state.pinned.filter((id) => id !== platformId)
+    : [...state.pinned, platformId];
+  renderPlatforms();
+  await window.r2sd.setConfig({ pinnedPlatforms: state.pinned });
 }
 
 async function loadPlatforms(refresh = false) {
@@ -73,11 +119,9 @@ async function loadPlatforms(refresh = false) {
     setCacheStatus(result.fromCache, result.fetchedAt);
     renderPlatforms();
 
-    // Auto-select first platform on initial load
+    // Auto-select first platform (pinned first) on initial load
     if (state.currentPlatformId === null) {
-      const first = state.platforms
-        .filter((p) => (p.rom_count || 0) > 0)
-        .sort((a, b) => a.name.localeCompare(b.name))[0];
+      const first = sortedPlatforms()[0];
       if (first) selectPlatform(first.id);
     }
   } catch (err) {
@@ -93,13 +137,39 @@ function visibleRoms() {
     const q = state.search.toLowerCase();
     roms = roms.filter((r) => (r.name || r.fs_name || '').toLowerCase().includes(q));
   }
+  if (state.genre) {
+    roms = roms.filter((r) => romGenres(r).includes(state.genre));
+  }
   const sorted = [...roms];
+  const byName = (a, b) => (a.name || a.fs_name || '').localeCompare(b.name || b.fs_name || '');
   if (state.sort === 'size') {
     sorted.sort((a, b) => (b.fs_size_bytes || 0) - (a.fs_size_bytes || 0));
+  } else if (state.sort === 'year') {
+    sorted.sort((a, b) => (romYear(b) || 0) - (romYear(a) || 0) || byName(a, b));
+  } else if (state.sort === 'rating') {
+    sorted.sort((a, b) => (romRating(b) || 0) - (romRating(a) || 0) || byName(a, b));
   } else {
-    sorted.sort((a, b) => (a.name || a.fs_name || '').localeCompare(b.name || b.fs_name || ''));
+    sorted.sort(byName);
   }
   return sorted;
+}
+
+function updateGenreFilter() {
+  const select = $('genre-filter');
+  const genres = new Set();
+  for (const rom of state.roms) for (const g of romGenres(rom)) genres.add(g);
+  const current = state.genre;
+  select.innerHTML = '<option value="">All genres</option>';
+  for (const g of [...genres].sort()) {
+    const opt = document.createElement('option');
+    opt.value = g;
+    opt.textContent = g;
+    select.appendChild(opt);
+  }
+  // Keep the selection if the genre still exists on this platform
+  select.value = genres.has(current) ? current : '';
+  state.genre = select.value;
+  select.style.display = genres.size ? '' : 'none';
 }
 
 // Lazy cover loading: only fetch covers for cards that scroll into view.
@@ -110,12 +180,7 @@ const coverObserver = new IntersectionObserver(
       if (!entry.isIntersecting) continue;
       const wrap = entry.target;
       coverObserver.unobserve(wrap);
-      const romId = Number(wrap.dataset.romId);
-      const serverPath = wrap.dataset.coverPath;
-      if (!serverPath) continue;
-      window.r2sd.getCover(romId, serverPath).then((file) => {
-        if (file) wrap.querySelector('img').src = 'file:///' + file.replace(/\\/g, '/');
-      });
+      setAssetSrc(wrap.querySelector('img'), Number(wrap.dataset.romId), wrap.dataset.coverPath);
     }
   },
   { root: $('game-grid'), rootMargin: '400px' }
@@ -129,7 +194,7 @@ function renderGrid() {
   const roms = visibleRoms();
   $('grid-status').hidden = roms.length > 0;
   $('grid-status').textContent = state.roms.length
-    ? 'No games match your search.'
+    ? 'No games match your filters.'
     : 'No games on this platform.';
 
   const frag = document.createDocumentFragment();
@@ -137,6 +202,7 @@ function renderGrid() {
     const card = document.createElement('div');
     card.className = 'game-card';
     card.title = rom.fs_name || rom.name || '';
+    card.addEventListener('click', () => openDetail(rom));
 
     const wrap = document.createElement('div');
     wrap.className = 'cover-wrap';
@@ -155,7 +221,8 @@ function renderGrid() {
     name.textContent = rom.name || rom.fs_name || 'Unknown';
     const size = document.createElement('div');
     size.className = 'game-size';
-    size.textContent = formatSize(rom.fs_size_bytes);
+    const year = romYear(rom);
+    size.textContent = [formatSize(rom.fs_size_bytes), year].filter(Boolean).join(' · ');
     meta.append(name, size);
 
     card.append(wrap, meta);
@@ -180,6 +247,7 @@ async function selectPlatform(platformId, refresh = false) {
     if (state.currentPlatformId !== platformId) return; // user moved on
     state.roms = result.roms;
     setCacheStatus(result.fromCache, result.fetchedAt);
+    updateGenreFilter();
     renderGrid();
   } catch (err) {
     $('grid-status').textContent = `Failed to load games: ${err.message || err}`;
@@ -190,6 +258,7 @@ async function selectPlatform(platformId, refresh = false) {
 window.r2sd.onRomsProgress(({ platformId, page, loaded, total }) => {
   if (platformId !== state.currentPlatformId) return;
   state.roms.push(...page);
+  updateGenreFilter();
   renderGrid();
   $('grid-status').hidden = false;
   $('grid-status').textContent = loaded < total
@@ -209,8 +278,60 @@ window.r2sd.onRomsUpdated(({ platformId, data, fetchedAt }) => {
   if (platformId !== state.currentPlatformId) return;
   state.roms = data;
   setCacheStatus(false, fetchedAt);
+  updateGenreFilter();
   renderGrid();
 });
+
+// ── Game detail modal ───────────────────────────────────
+
+function addFact(container, label, value) {
+  if (!value) return;
+  const l = document.createElement('span');
+  l.className = 'fact-label';
+  l.textContent = label;
+  const v = document.createElement('span');
+  v.className = 'fact-value';
+  v.textContent = value;
+  container.append(l, v);
+}
+
+function openDetail(rom) {
+  $('detail-name').textContent = rom.name || rom.fs_name || 'Unknown';
+
+  const facts = $('detail-facts');
+  facts.innerHTML = '';
+  const md = rom.metadatum || {};
+  addFact(facts, 'Released', romYear(rom));
+  addFact(facts, 'Genres', romGenres(rom).join(', '));
+  addFact(facts, 'Rating', romRating(rom) ? `${Math.round(romRating(rom))} / 100` : '');
+  addFact(facts, 'Companies', (md.companies || []).slice(0, 3).join(', '));
+  addFact(facts, 'Players', md.player_count);
+  addFact(facts, 'Size', formatSize(rom.fs_size_bytes));
+  addFact(facts, 'File', rom.fs_name);
+
+  $('detail-summary').textContent = rom.summary || '';
+
+  const cover = document.querySelector('#detail-modal .detail-cover img');
+  cover.removeAttribute('src');
+  setAssetSrc(cover, rom.id, rom.path_cover_large || rom.path_cover_small || '');
+
+  const shots = $('detail-screenshots');
+  shots.innerHTML = '';
+  for (const shotPath of (rom.merged_screenshots || []).slice(0, 8)) {
+    const img = document.createElement('img');
+    img.alt = '';
+    shots.appendChild(img);
+    setAssetSrc(img, rom.id, shotPath);
+  }
+
+  const modal = $('detail-modal');
+  modal.hidden = false;
+  modal.querySelector('.detail-card').scrollTop = 0;
+}
+
+function closeDetail() {
+  $('detail-modal').hidden = true;
+}
 
 // ── Settings ────────────────────────────────────────────
 
@@ -280,11 +401,25 @@ $('sort').addEventListener('change', (e) => {
   state.sort = e.target.value;
   renderGrid();
 });
+$('genre-filter').addEventListener('change', (e) => {
+  state.genre = e.target.value;
+  renderGrid();
+});
+$('btn-close-detail').addEventListener('click', closeDetail);
+$('detail-backdrop').addEventListener('click', closeDetail);
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    closeDetail();
+    closeSettings();
+  }
+});
 
 // ── Boot ────────────────────────────────────────────────
 
 (async function boot() {
   const configured = await window.r2sd.isConfigured();
+  const cfg = await window.r2sd.getConfig();
+  state.pinned = cfg.pinnedPlatforms || [];
   if (!configured) {
     openSettings();
     return;

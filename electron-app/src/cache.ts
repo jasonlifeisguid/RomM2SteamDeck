@@ -8,6 +8,7 @@
  * the network.
  */
 import { app } from 'electron';
+import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 
@@ -48,8 +49,10 @@ export function clearCache(): void {
   fs.rmSync(coversDir(), { recursive: true, force: true });
 }
 
-/** Path a cover for this rom would be cached at (extension from server path). */
-export function coverCachePath(romId: number, serverPath: string): string {
+/** Cache path for a rom image asset (cover or screenshot). The server path is
+ *  hashed into the filename so multiple assets per rom don't collide. */
+export function assetCachePath(romId: number, serverPath: string): string {
   const ext = path.extname(new URL(serverPath, 'http://x').pathname) || '.png';
-  return path.join(coversDir(), `${romId}${ext}`);
+  const hash = crypto.createHash('sha1').update(serverPath.split('?')[0]).digest('hex').slice(0, 8);
+  return path.join(coversDir(), `${romId}-${hash}${ext}`);
 }
