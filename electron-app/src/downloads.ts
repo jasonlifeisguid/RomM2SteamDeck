@@ -120,6 +120,12 @@ function safeJoin(destRoot: string, entryPath: string): string | null {
 
 function run7za(archive: string, dest: string, onPercent: (pct: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
+    // Belt-and-suspenders for running from source on Linux/macOS, where the
+    // bundled 7za may lack the exec bit. In a packaged AppImage this path is
+    // read-only (the afterPack hook already set it), so ignore failures.
+    if (process.platform !== 'win32') {
+      try { fs.chmodSync(path7za, 0o755); } catch { /* read-only or already ok */ }
+    }
     // -bsp1 prints progress percentages to stdout
     const proc = spawn(path7za, ['x', archive, `-o${dest}`, '-y', '-bsp1'], { windowsHide: true });
     let stderr = '';
