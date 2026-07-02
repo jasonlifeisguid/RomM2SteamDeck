@@ -16,6 +16,16 @@ contextBridge.exposeInMainWorld('r2sd', {
   getPlatforms: (opts?: object) => ipcRenderer.invoke('library:platforms', opts),
   getRoms: (platformId: number, opts?: object) => ipcRenderer.invoke('library:roms', platformId, opts),
   getAsset: (romId: number, serverPath: string) => ipcRenderer.invoke('asset:get', romId, serverPath),
+  pickFolder: (title?: string) => ipcRenderer.invoke('dialog:pickFolder', title),
+
+  // Downloads
+  listDownloads: () => ipcRenderer.invoke('downloads:list'),
+  startDownload: (rom: object, installPath?: string) => ipcRenderer.invoke('download:start', rom, installPath),
+  cancelDownload: (romId: number) => ipcRenderer.invoke('download:cancel', romId),
+  deleteDownload: (romId: number) => ipcRenderer.invoke('download:delete', romId),
+  syncDownloads: (platformId: number) => ipcRenderer.invoke('downloads:sync', platformId),
+  onDownloadEvent: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('download:event', (_e, payload) => cb(payload)),
 
   // Background-refresh + progress events
   onPlatformsUpdated: (cb: (payload: unknown) => void) =>

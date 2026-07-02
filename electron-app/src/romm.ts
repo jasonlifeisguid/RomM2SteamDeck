@@ -73,6 +73,19 @@ export class RommClient {
     }
   }
 
+  /** Open a streaming download of a rom's content. Caller owns the body stream. */
+  async openDownloadStream(romId: number, fsName: string, signal?: AbortSignal): Promise<Response> {
+    const url = `${this.baseUrl}/api/roms/${romId}/content/${encodeURIComponent(fsName)}`;
+    const response = await fetch(url, {
+      headers: { Authorization: this.authHeader },
+      signal,
+    });
+    if (!response.ok || !response.body) {
+      throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+    }
+    return response;
+  }
+
   async heartbeat(): Promise<{ ok: boolean; version?: string; error?: string }> {
     try {
       const data = (await this.get('/heartbeat')) as { SYSTEM?: { VERSION?: string } };

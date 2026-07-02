@@ -56,11 +56,55 @@
           <h2 id="detail-name"></h2>
           <div id="detail-facts" class="detail-facts"></div>
           <p id="detail-summary" class="detail-summary"></p>
+          <div class="detail-actions">
+            <select id="detail-install-path" hidden></select>
+            <button id="btn-dl" class="primary" hidden>&#8681; Download</button>
+            <button id="btn-dl-cancel" class="secondary" hidden>Cancel</button>
+            <button id="btn-dl-delete" class="secondary danger" hidden>Delete from disk</button>
+            <span id="detail-dl-status" class="small muted"></span>
+          </div>
+          <div class="dl-bar" id="detail-dl-bar" hidden><div class="dl-bar-fill"></div></div>
         </div>
       </div>
       <div id="detail-screenshots" class="detail-screenshots"></div>
     </div>
   </div>
+
+  <!-- Platform folders modal -->
+  <div id="platforms-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="platforms-backdrop"></div>
+    <div class="modal-card platforms-card">
+      <h2>Platform Folders</h2>
+      <p class="small muted" style="margin-bottom:12px">
+        Set where each platform's games go. Enable <strong>Extract</strong> for platforms whose
+        games are archives that should be unpacked (e.g. Windows) and give them an install path.
+      </p>
+      <div class="platform-defaults">
+        <label>Base folder for auto-fill
+          <span class="path-row">
+            <input id="pf-base" type="text" placeholder="e.g. C:\Games\ROMs or /home/deck/retrodeck/roms">
+            <button class="icon-btn" id="pf-base-browse" title="Browse">&#128193;</button>
+            <button class="secondary" id="pf-autofill" title="Fill empty folders with base/slug">Auto-fill empty</button>
+          </span>
+        </label>
+        <label>Staging folder for archives (optional — defaults to the install path)
+          <span class="path-row">
+            <input id="pf-staging" type="text" placeholder="Where archives are downloaded before extraction">
+            <button class="icon-btn" id="pf-staging-browse" title="Browse">&#128193;</button>
+          </span>
+        </label>
+      </div>
+      <div id="pf-rows" class="pf-rows"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="pf-save" class="primary">Save</button>
+        <button id="pf-close" class="secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Toasts -->
+  <div id="toasts"></div>
 
   <!-- Settings modal -->
   <div id="settings-modal" class="modal" hidden>
@@ -78,6 +122,7 @@
       </label>
       <div id="cfg-test-result" class="small"></div>
       <div class="modal-actions">
+        <button id="btn-platforms" class="secondary">Platform Folders&hellip;</button>
         <button id="btn-clear-cache" class="secondary">Clear Cache</button>
         <span class="spacer"></span>
         <button id="btn-test" class="secondary">Test Connection</button>

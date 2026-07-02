@@ -1,9 +1,10 @@
-import { app, BrowserWindow, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { RommClient, RommPlatform, RommRom } from './romm';
 import * as config from './config';
 import * as cache from './cache';
+import * as downloads from './downloads';
 
 // Explicit userData dir. The Electron default (productName "RomM2SteamDeck")
 // collides case-insensitively on Windows with the Python app's
@@ -175,6 +176,37 @@ function registerIpc(): void {
     // No cache yet: full fetch (progress streamed to the renderer per page)
     const roms = await refreshRoms(platformId);
     return { roms, fromCache: false, fetchedAt: Date.now() };
+  });
+
+  // Native folder picker
+  ipcMain.handle('dialog:pickFolder', async (_e, title?: string) => {
+    const result = await dialog.showOpenDialog(mainWindow!, {
+      title: title || 'Select folder',
+      properties: ['openDirectory', 'createDirectory'],
+    });
+    return result.canceled ? null : result.filePaths[0];
+  });
+
+  // Downloads
+  ipcMain.handle('downloads:list', () => downloads.listDownloads());
+
+  ipcMain.handle('download:start', (_e, rom: downloads.RomInfo, installPath?: string) => {
+    // Fire and forget — progress flows back via download:event
+    void downloads.startDownload(getClient(), rom, installPath || '', (payload) =>
+      send('download:event', payload)
+    );
+    return true;
+  });
+
+  ipcMain.handle('download:cancel', (_e, romId: number) => downloads.cancelDownload(romId));
+
+  ipcMain.handle('download:delete', (_e, romId: number) => downloads.deleteDownload(romId));
+
+  ipcMain.handle('downloads:sync', (_e, platformId: number) => {
+    const cached = cache.readCache<RommRom[]>(`roms-${platformId}`);
+    if (!cached) return { added: 0, removed: 0 };
+    const roms = cached.data.map((r) => ({ id: r.id, name: r.name || r.fs_name, fsName: r.fs_name }));
+    return downloads.syncPlatform(platformId, roms);
   });
 
   // Server-hosted images (covers, screenshots): returns a local file path,

@@ -1,9 +1,28 @@
-# RomM2SteamDeck — Electron app (Stage 1)
+# RomM2SteamDeck — Electron app (Stage 2)
 
 Native desktop rewrite of the Flask/browser app in the parent folder. The
 Python app remains untouched and working; this is built alongside it.
 
-## Current state (Stage 1: read-only library browser)
+## Stage 2: downloads & extraction
+
+- **Streaming downloads** with real-time progress on the card and in the
+  detail dialog, plus cancel (partial files cleaned up)
+- **Extract-while-downloading** for zips on auto-extract platforms: each
+  network chunk is written to the archive AND fed to a streaming extractor,
+  so the game is installed the moment the download finishes. Falls back to
+  the bundled 7za automatically if a zip can't be streamed.
+- **Bundled 7za** (7zip-bin) for .7z and fallback extraction — no system
+  7-Zip install needed on any OS. Extraction progress parsed from 7za.
+- **Platform Folders** settings (Settings → Platform Folders): per-platform
+  download folder, auto-extract toggle, install path, native folder picker,
+  auto-fill from RomM fs_slug, optional archive staging folder
+- **Download tracking**: green badge on downloaded games, delete-from-disk
+  with confirmation, guard that refuses to delete configured root folders
+- **Filesystem sync** on platform open: adopts files/folders already on disk
+  that match library games, drops records for files deleted externally
+- Clear error for zero-byte roms (the server library has a few)
+
+## Stage 1: library browser
 
 - Native window, clean exit (close the window = app exits), single instance
 - Settings with **Test Connection**; RomM password encrypted at rest via OS
