@@ -274,13 +274,32 @@ function createWindow(): void {
     minHeight: 600,
     backgroundColor: '#0d0d0d',
     autoHideMenuBar: true,
+    // Create hidden and only show once the first frame is painted. On the
+    // Steam Deck with software (SwiftShader) rendering the window otherwise
+    // races the first paint and appears as a gray/black unpainted surface.
+    show: false,
+    paintWhenInitiallyHidden: true,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      backgroundThrottling: false,
     },
   });
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
+
+  mainWindow.once('ready-to-show', () => mainWindow?.show());
+  // Safety net: show anyway if ready-to-show is delayed, and nudge a repaint
+  // (a 1px resize forces the compositor to present a frame).
+  setTimeout(() => {
+    if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.isVisible()) {
+      mainWindow.show();
+      const [w, h] = mainWindow.getSize();
+      mainWindow.setSize(w, h + 1);
+      mainWindow.setSize(w, h);
+    }
+  }, 2500);
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
