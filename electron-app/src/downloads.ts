@@ -48,6 +48,58 @@ export type EventSender = (payload: Record<string, unknown>) => void;
 
 const activeDownloads = new Map<number, AbortController>();
 
+// ── Serial download queue ───────────────────────────────────────────────
+// Clicking download enqueues; one download+extract runs at a time, the rest
+// wait. A separate queue:update stream drives the global bottom bar.
+
+interface QueueItem { rom: RomInfo; installPath: string; }
+interface QueueCtx { client: RommClient; emitDownload: EventSender; emitQueue: EventSender; }
+
+const queue: QueueItem[] = [];
+let activeItem: QueueItem | null = null;
+let queueCtx: QueueCtx | null = null;
+
+export interface QueueEntry { romId: number; romName: string; status: 'active' | 'queued'; }
+
+export function getQueueSnapshot(): { items: QueueEntry[] } {
+  const items: QueueEntry[] = [];
+  if (activeItem) items.push({ romId: activeItem.rom.id, romName: activeItem.rom.name, status: 'active' });
+  for (const q of queue) items.push({ romId: q.rom.id, romName: q.rom.name, status: 'queued' });
+  return { items };
+}
+
+function emitQueueState(): void {
+  queueCtx?.emitQueue(getQueueSnapshot() as unknown as Record<string, unknown>);
+}
+
+/** Add a game to the download queue (idempotent per rom). */
+export function enqueueDownload(client: RommClient, rom: RomInfo, installPath: string, emitDownload: EventSender, emitQueue: EventSender): void {
+  queueCtx = { client, emitDownload, emitQueue };
+  if (activeItem?.rom.id === rom.id || queue.some((q) => q.rom.id === rom.id)) {
+    emitQueueState();
+    return;
+  }
+  queue.push({ rom, installPath });
+  emitQueueState();
+  void processQueue();
+}
+
+async function processQueue(): Promise<void> {
+  if (activeItem || !queueCtx) return; // already running one
+  const next = queue.shift();
+  if (!next) { emitQueueState(); return; }
+  activeItem = next;
+  emitQueueState();
+  try {
+    await startDownload(queueCtx.client, next.rom, next.installPath, queueCtx.emitDownload);
+  } catch (err) {
+    console.error('Queue item failed:', err);
+  }
+  activeItem = null;
+  emitQueueState();
+  void processQueue();
+}
+
 // ── Tracking records (userData/downloads.json) ──────────────────────────
 
 function recordsPath(): string {
@@ -363,6 +415,15 @@ export async function startDownload(
 }
 
 export function cancelDownload(romId: number): boolean {
+  // Queued (not yet started) → just drop it from the queue
+  const qi = queue.findIndex((q) => q.rom.id === romId);
+  if (qi >= 0) {
+    queue.splice(qi, 1);
+    emitQueueState();
+    queueCtx?.emitDownload({ romId, status: 'cancelled', message: 'Removed from queue' });
+    return true;
+  }
+  // Active download → abort the stream
   const controller = activeDownloads.get(romId);
   if (!controller) return false;
   controller.abort();

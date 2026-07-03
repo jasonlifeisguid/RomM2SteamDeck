@@ -210,12 +210,17 @@ function registerIpc(): void {
   ipcMain.handle('downloads:list', () => downloads.listDownloads());
 
   ipcMain.handle('download:start', (_e, rom: downloads.RomInfo, installPath?: string) => {
-    // Fire and forget — progress flows back via download:event
-    void downloads.startDownload(getClient(), rom, installPath || '', (payload) =>
-      send('download:event', payload)
+    // Enqueue — the serial queue runs one at a time; progress flows back via
+    // download:event, queue composition via queue:update
+    downloads.enqueueDownload(
+      getClient(), rom, installPath || '',
+      (payload) => send('download:event', payload),
+      (payload) => send('queue:update', payload)
     );
     return true;
   });
+
+  ipcMain.handle('queue:get', () => downloads.getQueueSnapshot());
 
   ipcMain.handle('download:cancel', (_e, romId: number) => downloads.cancelDownload(romId));
 

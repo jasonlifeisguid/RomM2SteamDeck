@@ -24,8 +24,11 @@ contextBridge.exposeInMainWorld('r2sd', {
   cancelDownload: (romId: number) => ipcRenderer.invoke('download:cancel', romId),
   deleteDownload: (romId: number) => ipcRenderer.invoke('download:delete', romId),
   syncDownloads: (platformId: number) => ipcRenderer.invoke('downloads:sync', platformId),
+  getQueue: () => ipcRenderer.invoke('queue:get'),
   onDownloadEvent: (cb: (payload: unknown) => void) =>
     ipcRenderer.on('download:event', (_e, payload) => cb(payload)),
+  onQueueUpdate: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('queue:update', (_e, payload) => cb(payload)),
 
   // Desktop shortcuts
   getPlatform: () => ipcRenderer.invoke('app:platform'),

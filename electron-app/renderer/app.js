@@ -14,9 +14,15 @@ const state = {
   theme: 'oled-limited',
   view: 'grid',
   downloads: new Map(), // romId -> DownloadRecord
-  progress: new Map(),  // romId -> latest download:event payload
+  progress: new Map(),  // romId -> latest download:event payload (active download)
+  queue: [],            // [{ romId, romName, status: 'active'|'queued' }]
   detailRom: null,
 };
+
+function queueStatusFor(romId) {
+  const e = state.queue.find((q) => q.romId === romId);
+  return e ? e.status : null;
+}
 
 // Color themes — applied by setting CSS variables on :root (ported from the
 // Python app's palette). Programmatic style is allowed under our CSP.
@@ -284,8 +290,9 @@ function updateCardProgress(romId) {
   const wrap = coverWrapFor(romId);
   if (!wrap) return;
   const progress = state.progress.get(romId);
+  const qs = queueStatusFor(romId);
   let bar = wrap.querySelector('.dl-bar');
-  if (!progress) {
+  if (!progress && !qs) {
     bar?.remove();
     updateCardBadge(romId);
     return;
@@ -296,16 +303,23 @@ function updateCardProgress(romId) {
     bar.innerHTML = '<div class="dl-bar-fill"></div>';
     wrap.appendChild(bar);
   }
-  const pct = progress.percent ?? 0;
-  bar.classList.toggle('indeterminate', progress.status === 'starting' || (progress.status === 'extracting' && !progress.percent));
-  bar.querySelector('.dl-bar-fill').style.width = `${pct}%`;
+  if (progress) {
+    const pct = progress.percent ?? 0;
+    bar.classList.toggle('indeterminate', progress.status === 'starting' || (progress.status === 'extracting' && !progress.percent));
+    bar.querySelector('.dl-bar-fill').style.width = `${pct}%`;
+  } else {
+    // Queued but not started — subtle indeterminate bar
+    bar.classList.add('indeterminate');
+    bar.querySelector('.dl-bar-fill').style.width = '30%';
+  }
 }
 
 function updateCardBadge(romId) {
   const wrap = coverWrapFor(romId);
   if (!wrap) return;
   let badge = wrap.querySelector('.dl-badge');
-  if (state.downloads.has(romId)) {
+  const installed = state.downloads.has(romId);
+  if (installed) {
     if (!badge) {
       badge = document.createElement('div');
       badge.className = 'dl-badge';
@@ -316,6 +330,9 @@ function updateCardBadge(romId) {
   } else {
     badge?.remove();
   }
+  // Keep the list-view "Installed" label in sync
+  const statusEl = cardFor(romId)?.querySelector('.list-status');
+  if (statusEl) statusEl.textContent = installed ? 'Installed' : '';
 }
 
 function cardFor(romId) {
@@ -326,7 +343,7 @@ function cardFor(romId) {
 function buildCardActions(rom) {
   const actions = document.createElement('div');
   actions.className = 'card-actions';
-  const progress = state.progress.get(rom.id);
+  const qs = queueStatusFor(rom.id);
   const downloaded = state.downloads.has(rom.id);
   const mkBtn = (glyph, title, cls, handler) => {
     const b = document.createElement('button');
@@ -336,8 +353,8 @@ function buildCardActions(rom) {
     b.addEventListener('click', (e) => { e.stopPropagation(); handler(); });
     actions.appendChild(b);
   };
-  if (progress) {
-    mkBtn('✕', 'Cancel download', 'danger', () => window.r2sd.cancelDownload(rom.id));
+  if (qs) {
+    mkBtn('✕', qs === 'queued' ? 'Remove from queue' : 'Cancel download', 'danger', () => window.r2sd.cancelDownload(rom.id));
   } else if (downloaded) {
     mkBtn('🗑', 'Delete from disk', 'danger', () => deleteDownloadFor(rom));
   } else {
@@ -355,15 +372,19 @@ function updateCardActions(romId) {
   card.appendChild(buildCardActions(rom));
 }
 
-/** Start a download from a tile/menu using the platform's default install path. */
+/** Queue a download from a tile/menu using the platform's default install path. */
 function quickDownload(rom) {
   window.r2sd.startDownload(
     { id: rom.id, name: rom.name || rom.fs_name, fsName: rom.fs_name, platformId: rom.platform_id, size: rom.fs_size_bytes || 0 },
     ''
   );
-  state.progress.set(rom.id, { romId: rom.id, status: 'starting', percent: 0 });
+  // Optimistic: reflect queued state until the queue:update event lands
+  if (!queueStatusFor(rom.id)) {
+    state.queue.push({ romId: rom.id, romName: rom.name || rom.fs_name, status: state.queue.length ? 'queued' : 'active' });
+  }
   updateCardProgress(rom.id);
   updateCardActions(rom.id);
+  renderQueueBar();
 }
 
 // ── Right-click context menu ────────────────────────────
@@ -458,15 +479,32 @@ function renderGrid() {
     size.className = 'game-size';
     const year = romYear(rom);
     size.textContent = [formatSize(rom.fs_size_bytes), year].filter(Boolean).join(' · ');
-    meta.append(name, size);
+    // Genres line — only rendered visibly in list view (CSS-gated)
+    const genresLine = document.createElement('div');
+    genresLine.className = 'game-genres';
+    genresLine.textContent = romGenres(rom).slice(0, 4).join(' · ');
+    meta.append(name, size, genresLine);
 
-    card.append(wrap, meta, buildCardActions(rom));
+    // Right-hand columns for list view: rating + installed status
+    const listCols = document.createElement('div');
+    listCols.className = 'list-cols';
+    const ratingEl = document.createElement('span');
+    ratingEl.className = 'list-rating';
+    const rating = romRating(rom);
+    if (rating) ratingEl.textContent = `★ ${Math.round(rating)}`;
+    const statusEl = document.createElement('span');
+    statusEl.className = 'list-status';
+    if (state.downloads.has(rom.id)) statusEl.textContent = 'Installed';
+    listCols.append(ratingEl, statusEl);
+
+    card.append(wrap, meta, listCols, buildCardActions(rom));
     frag.appendChild(card);
   }
   grid.appendChild(frag);
 
-  // Restore progress overlays for in-flight downloads
+  // Restore progress / queued overlays after a re-render
   for (const romId of state.progress.keys()) updateCardProgress(romId);
+  for (const q of state.queue) updateCardProgress(q.romId);
 
   // Re-apply the gamepad focus ring after a re-render
   if (gp.active && gp.index >= 0) gpSetFocus(gp.index);
@@ -551,8 +589,74 @@ window.r2sd.onDownloadEvent(async (event) => {
 
   updateCardProgress(romId);
   updateCardActions(romId);
+  renderQueueBar();
   if (state.detailRom?.id === romId) refreshDetailActions();
 });
+
+// Queue composition changes (serial queue in the main process)
+window.r2sd.onQueueUpdate((payload) => {
+  const prevIds = new Set(state.queue.map((q) => q.romId));
+  state.queue = payload.items || [];
+  const nowIds = new Set(state.queue.map((q) => q.romId));
+  // Refresh any tile whose queue membership changed
+  for (const id of new Set([...prevIds, ...nowIds])) {
+    updateCardActions(id);
+    updateCardProgress(id);
+  }
+  renderQueueBar();
+});
+
+function renderQueueBar() {
+  const bar = $('dl-statusbar');
+  if (!state.queue.length) { bar.hidden = true; return; }
+  bar.hidden = false;
+
+  const active = state.queue.find((q) => q.status === 'active') || state.queue[0];
+  const queuedCount = state.queue.filter((q) => q.status === 'queued').length;
+  const prog = active ? state.progress.get(active.romId) : null;
+
+  $('dl-sb-title').textContent = active ? active.romName : '';
+  const mini = $('dl-sb-mini');
+  const fill = $('dl-sb-mini-fill');
+  const indeterminate = !prog || prog.status === 'starting' || (prog.status === 'extracting' && !prog.percent);
+  mini.classList.toggle('indeterminate', indeterminate);
+  fill.style.width = (prog?.percent ?? 0) + '%';
+  const label = prog?.status === 'extracting' ? 'extracting…' : prog?.status === 'downloading' ? `${prog.percent}%` : 'starting…';
+  $('dl-sb-count').textContent = `${label}${queuedCount ? ` · ${queuedCount} queued` : ''}`;
+
+  // Expanded list
+  const list = $('dl-sb-list');
+  list.innerHTML = '';
+  for (const q of state.queue) {
+    const row = document.createElement('div');
+    row.className = 'dl-sb-item';
+    const name = document.createElement('div');
+    name.className = 'dl-sb-item-name';
+    name.textContent = q.romName;
+    row.appendChild(name);
+    if (q.status === 'active') {
+      const p = state.progress.get(q.romId);
+      const b = document.createElement('div');
+      b.className = 'dl-sb-item-bar';
+      const f = document.createElement('div');
+      f.style.width = (p?.percent ?? 0) + '%';
+      b.appendChild(f);
+      row.appendChild(b);
+    } else {
+      const s = document.createElement('div');
+      s.className = 'dl-sb-item-status';
+      s.textContent = 'Queued';
+      row.appendChild(s);
+    }
+    const cancel = document.createElement('button');
+    cancel.className = 'card-action-btn danger';
+    cancel.textContent = '✕';
+    cancel.title = q.status === 'queued' ? 'Remove from queue' : 'Cancel';
+    cancel.addEventListener('click', () => window.r2sd.cancelDownload(q.romId));
+    row.appendChild(cancel);
+    list.appendChild(row);
+  }
+}
 
 function startDownloadFor(rom) {
   const installSelect = $('detail-install-path');
@@ -625,16 +729,19 @@ function refreshDetailActions() {
     installSelect.hidden = false;
   }
 
-  dlBtn.hidden = Boolean(progress || record);
-  cancelBtn.hidden = !progress;
-  deleteBtn.hidden = !record || Boolean(progress);
+  const inQueue = queueStatusFor(rom.id);
+  dlBtn.hidden = Boolean(inQueue || record);
+  cancelBtn.hidden = !inQueue;
+  deleteBtn.hidden = !record || Boolean(inQueue);
   // Shortcut maker + Play: only for installed (extracted) PC games
-  shortcutBtn.hidden = !(record && setup.autoExtract && !progress);
-  playBtn.hidden = !(record && setup.autoExtract && !progress);
+  shortcutBtn.hidden = !(record && setup.autoExtract && !inQueue);
+  playBtn.hidden = !(record && setup.autoExtract && !inQueue);
   playBtn.textContent = record && record.defaultExe ? '▶ Play' : '▶ Play…';
   bar.hidden = !progress;
 
-  if (progress) {
+  if (inQueue === 'queued' && !progress) {
+    statusEl.textContent = 'Queued — waiting for the current download';
+  } else if (progress) {
     const pct = progress.percent ?? 0;
     bar.classList.toggle('indeterminate', progress.status === 'starting' || (progress.status === 'extracting' && !progress.percent));
     bar.querySelector('.dl-bar-fill').style.width = `${pct}%`;
@@ -1186,9 +1293,21 @@ document.addEventListener('keydown', (e) => {
 
 // ── Boot ────────────────────────────────────────────────
 
+$('dl-sb-toggle').addEventListener('click', () => {
+  const list = $('dl-sb-list');
+  list.hidden = !list.hidden;
+  $('dl-sb-toggle').innerHTML = list.hidden ? '&#9650;' : '&#9660;';
+  $('dl-sb-toggle').title = list.hidden ? 'Show queue' : 'Hide queue';
+});
+
 (async function boot() {
   await reloadConfig();
   await reloadDownloads();
+  try {
+    const q = await window.r2sd.getQueue();
+    state.queue = q.items || [];
+    renderQueueBar();
+  } catch { /* no queue yet */ }
   const configured = await window.r2sd.isConfigured();
   if (!configured) {
     openSettings();

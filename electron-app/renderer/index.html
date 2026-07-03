@@ -47,6 +47,18 @@
       </header>
       <div id="grid-status" class="muted pad" hidden></div>
       <section id="game-grid" class="game-grid"></section>
+
+      <!-- Global download queue bar -->
+      <div id="dl-statusbar" class="dl-statusbar" hidden>
+        <div class="dl-statusbar-summary">
+          <span class="dl-spinner"></span>
+          <span id="dl-sb-title" class="dl-sb-title"></span>
+          <div id="dl-sb-mini" class="dl-sb-mini"><div id="dl-sb-mini-fill" class="dl-sb-mini-fill"></div></div>
+          <span id="dl-sb-count" class="dl-sb-count muted small"></span>
+          <button id="dl-sb-toggle" class="icon-btn" title="Show queue">&#9650;</button>
+        </div>
+        <div id="dl-sb-list" class="dl-sb-list" hidden></div>
+      </div>
     </main>
   </div>
 
