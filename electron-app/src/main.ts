@@ -235,6 +235,18 @@ function registerIpc(): void {
     shortcuts.createShortcut(exePath, gameName)
   );
 
+  // Set a game's default exe and launch it
+  ipcMain.handle('game:setDefaultExe', (_e, romId: number, exePath: string) =>
+    downloads.setDefaultExe(romId, exePath)
+  );
+  ipcMain.handle('game:launch', (_e, romId: number, exePath?: string) => {
+    if (exePath) downloads.setDefaultExe(romId, exePath);
+    const rec = downloads.listDownloads().find((r) => r.romId === romId);
+    const target = exePath || rec?.defaultExe;
+    if (!target) return { ok: false, error: 'No executable selected for this game yet' };
+    return shortcuts.launchGame(target);
+  });
+
   // Add to Steam (safe shortcuts.vdf writing)
   ipcMain.handle('steam:status', () => ({
     found: steam.findSteamRoot() !== null,

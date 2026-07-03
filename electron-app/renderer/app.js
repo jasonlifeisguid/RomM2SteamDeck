@@ -387,7 +387,10 @@ function showContextMenu(e, rom) {
   if (progress) {
     item('Cancel download', () => window.r2sd.cancelDownload(rom.id), true);
   } else if (downloaded) {
-    if (setup.autoExtract) item('Add to Steam / Shortcut…', () => openExePicker(rom));
+    if (setup.autoExtract) {
+      item('▶ Play', () => playGame(rom));
+      item('Add to Steam / Shortcut…', () => openExePicker(rom));
+    }
     item('Delete from disk', () => deleteDownloadFor(rom), true);
   } else {
     item('Download', () => quickDownload(rom));
@@ -604,6 +607,7 @@ function refreshDetailActions() {
   const cancelBtn = $('btn-dl-cancel');
   const deleteBtn = $('btn-dl-delete');
   const shortcutBtn = $('btn-shortcut');
+  const playBtn = $('btn-play');
   const statusEl = $('detail-dl-status');
   const bar = $('detail-dl-bar');
   const installSelect = $('detail-install-path');
@@ -624,8 +628,10 @@ function refreshDetailActions() {
   dlBtn.hidden = Boolean(progress || record);
   cancelBtn.hidden = !progress;
   deleteBtn.hidden = !record || Boolean(progress);
-  // Shortcut maker: only for installed (extracted) PC games
+  // Shortcut maker + Play: only for installed (extracted) PC games
   shortcutBtn.hidden = !(record && setup.autoExtract && !progress);
+  playBtn.hidden = !(record && setup.autoExtract && !progress);
+  playBtn.textContent = record && record.defaultExe ? '▶ Play' : '▶ Play…';
   bar.hidden = !progress;
 
   if (progress) {
@@ -699,6 +705,7 @@ async function openExePicker(rom) {
   exeSelected = null;
   $('exe-shortcut').disabled = true;
   $('exe-steam').disabled = true;
+  $('exe-play').disabled = true;
   $('exe-list').innerHTML = '<p class="muted small">Scanning for executables…</p>';
 
   // Native "Add to Steam" only shown when a Steam install is found; the
@@ -725,6 +732,7 @@ async function openExePicker(rom) {
       exeSelected = exe;
       $('exe-shortcut').disabled = false;
       $('exe-steam').disabled = false;
+      $('exe-play').disabled = false;
       document.querySelectorAll('.exe-option').forEach((el, j) => el.classList.toggle('selected', j === i));
     });
     const span = document.createElement('span');
@@ -746,6 +754,30 @@ async function createShortcut() {
   closeExePicker();
   if (res.error) toast(res.error, 'error');
   else toast('Desktop shortcut created', 'success');
+}
+
+async function playFromPicker() {
+  if (!exeSelected || !exePickerRom) return;
+  const rom = exePickerRom;
+  const exe = exeSelected;
+  closeExePicker();
+  const res = await window.r2sd.launchGame(rom.id, exe.path); // also sets as default
+  if (res.error) toast(res.error, 'error');
+  else toast(`Launching ${rom.name || rom.fs_name}…`, 'success');
+  await reloadDownloads();
+  if (state.detailRom?.id === rom.id) refreshDetailActions();
+}
+
+/** Play a downloaded game: launch its default exe, or pick one first. */
+async function playGame(rom) {
+  const rec = state.downloads.get(rom.id);
+  if (rec && rec.defaultExe) {
+    const res = await window.r2sd.launchGame(rom.id);
+    if (res.error) toast(res.error, 'error');
+    else toast(`Launching ${rom.name || rom.fs_name}…`, 'success');
+  } else {
+    openExePicker(rom); // no default yet — choose an exe, then Play from the picker
+  }
 }
 
 async function addToSteam() {
@@ -818,25 +850,43 @@ function buildPlatformRows() {
     folderRow.append(folderInput, folderBrowse);
     paths.appendChild(folderRow);
 
-    // Install-path field: used only when extracting
-    const installRow = document.createElement('span');
-    installRow.className = 'path-row';
-    const installInput = document.createElement('input');
-    installInput.type = 'text';
-    installInput.className = 'pf-install';
-    installInput.placeholder = 'Install path — extracted game folders go here';
-    installInput.value = setup.installPaths[0] || '';
-    installInput.addEventListener('input', markDirty);
-    const installBrowse = document.createElement('button');
-    installBrowse.className = 'icon-btn';
-    installBrowse.innerHTML = '&#128193;';
-    installBrowse.title = 'Browse';
-    installBrowse.addEventListener('click', async () => {
-      const picked = await window.r2sd.pickFolder(`Install path for ${p.name}`);
-      if (picked) { installInput.value = picked; markDirty(); }
-    });
-    installRow.append(installInput, installBrowse);
-    paths.appendChild(installRow);
+    // Install-path list: used only when extracting. Supports multiple paths
+    // (e.g. C:\Games and D:\Games) — the download picker lets you choose which.
+    const installList = document.createElement('div');
+    installList.className = 'pf-install-list';
+    const makeInstallRow = (value) => {
+      const r = document.createElement('span');
+      r.className = 'path-row';
+      const inp = document.createElement('input');
+      inp.type = 'text';
+      inp.className = 'pf-install';
+      inp.placeholder = 'Install path (e.g. C:\\Games or D:\\Games)';
+      inp.value = value || '';
+      inp.addEventListener('input', markDirty);
+      const browse = document.createElement('button');
+      browse.className = 'icon-btn';
+      browse.innerHTML = '&#128193;';
+      browse.title = 'Browse';
+      browse.addEventListener('click', async () => {
+        const picked = await window.r2sd.pickFolder(`Install path for ${p.name}`);
+        if (picked) { inp.value = picked; markDirty(); }
+      });
+      const remove = document.createElement('button');
+      remove.className = 'icon-btn';
+      remove.innerHTML = '&#10005;';
+      remove.title = 'Remove this path';
+      remove.addEventListener('click', () => { r.remove(); markDirty(); });
+      r.append(inp, browse, remove);
+      return r;
+    };
+    const addPathBtn = document.createElement('button');
+    addPathBtn.className = 'secondary pf-add-path';
+    addPathBtn.textContent = '+ Add install path';
+    addPathBtn.addEventListener('click', () => { installList.insertBefore(makeInstallRow(''), addPathBtn); markDirty(); });
+    const initialPaths = setup.installPaths.length ? setup.installPaths : [''];
+    for (const v of initialPaths) installList.appendChild(makeInstallRow(v));
+    installList.appendChild(addPathBtn);
+    paths.appendChild(installList);
 
     const extract = document.createElement('label');
     extract.className = 'pf-extract';
@@ -844,10 +894,10 @@ function buildPlatformRows() {
     check.type = 'checkbox';
     check.className = 'pf-autoextract';
     check.checked = setup.autoExtract;
-    // Show only the field that applies to this platform's mode
+    // Show only the field(s) that apply to this platform's mode
     const applyMode = () => {
       folderRow.style.display = check.checked ? 'none' : '';
-      installRow.style.display = check.checked ? '' : 'none';
+      installList.style.display = check.checked ? '' : 'none';
     };
     applyMode();
     check.addEventListener('change', () => { applyMode(); markDirty(); });
@@ -878,7 +928,7 @@ async function savePlatformsModal() {
     platforms[id] = {
       folder: row.querySelector('.pf-folder').value.trim(),
       autoExtract: row.querySelector('.pf-autoextract').checked,
-      installPaths: [row.querySelector('.pf-install').value.trim()].filter(Boolean),
+      installPaths: [...new Set([...row.querySelectorAll('.pf-install')].map((i) => i.value.trim()).filter(Boolean))],
     };
   }
   await window.r2sd.setConfig({
@@ -1105,6 +1155,8 @@ $('exe-cancel').addEventListener('click', closeExePicker);
 $('exe-backdrop').addEventListener('click', closeExePicker);
 $('exe-shortcut').addEventListener('click', createShortcut);
 $('exe-steam').addEventListener('click', addToSteam);
+$('exe-play').addEventListener('click', playFromPicker);
+$('btn-play').addEventListener('click', () => state.detailRom && playGame(state.detailRom));
 
 $('btn-platforms').addEventListener('click', () => { closeSettings(); openPlatformsModal(); });
 $('pf-close').addEventListener('click', closePlatformsModal);

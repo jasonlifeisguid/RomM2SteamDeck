@@ -33,6 +33,7 @@ export interface DownloadRecord {
   platformId: number;
   size: number;
   downloadedAt: number;
+  defaultExe?: string; // chosen executable for Play / shortcuts
 }
 
 export interface RomInfo {
@@ -79,6 +80,16 @@ function upsertRecord(record: DownloadRecord): void {
 
 function removeRecord(romId: number): void {
   saveRecords(loadRecords().filter((r) => r.romId !== romId));
+}
+
+/** Remember the chosen executable for a downloaded game (for Play / shortcuts). */
+export function setDefaultExe(romId: number, exePath: string): boolean {
+  const records = loadRecords();
+  const rec = records.find((r) => r.romId === romId);
+  if (!rec) return false;
+  rec.defaultExe = exePath;
+  saveRecords(records);
+  return true;
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────

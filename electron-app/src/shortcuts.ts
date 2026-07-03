@@ -9,7 +9,7 @@
  *
  * No electron imports here so the module is unit-testable standalone.
  */
-import { spawnSync } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -67,6 +67,37 @@ export function listExes(gameFolder: string): ExeFile[] {
 export interface ShortcutResult {
   path?: string;
   error?: string;
+}
+
+export interface LaunchResult {
+  ok: boolean;
+  error?: string;
+}
+
+/** Launch a game executable. Windows runs it directly; a Windows .exe on
+ *  Linux/macOS needs Proton/Wine, so we guide the user to Add-to-Steam. */
+export function launchGame(exePath: string): LaunchResult {
+  if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
+  const isExe = exePath.toLowerCase().endsWith('.exe');
+
+  if (process.platform !== 'win32' && isExe) {
+    return {
+      ok: false,
+      error: 'Launching Windows games on this OS needs Proton/Wine. Use "Add to Steam" to run it through Proton.',
+    };
+  }
+  try {
+    const child = spawn(exePath, [], {
+      cwd: path.dirname(exePath),
+      detached: true,
+      stdio: 'ignore',
+      windowsHide: false,
+    });
+    child.unref();
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
 }
 
 function sanitizeName(name: string): string {
