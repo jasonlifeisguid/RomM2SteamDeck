@@ -12,7 +12,10 @@
     <aside id="sidebar">
       <div class="sidebar-header">
         <span class="brand">R2SD</span>
-        <button id="btn-settings" class="icon-btn" title="Settings">&#9881;</button>
+        <span class="sidebar-header-actions">
+          <button id="btn-theme" class="icon-btn" title="Theme">&#127912;</button>
+          <button id="btn-settings" class="icon-btn" title="Settings">&#9881;</button>
+        </span>
       </div>
       <nav id="platform-list" class="platform-list">
         <p class="muted pad">Loading platforms&hellip;</p>
@@ -33,10 +36,12 @@
           </select>
           <select id="sort" title="Sort order">
             <option value="name">Name</option>
+            <option value="added">Recently Added</option>
             <option value="size">Size</option>
             <option value="year">Release Year</option>
             <option value="rating">Rating</option>
           </select>
+          <button id="btn-view" class="icon-btn" title="Toggle list / grid view">&#9636;</button>
           <button id="btn-refresh" class="icon-btn" title="Refresh from server">&#8635;</button>
         </div>
       </header>
@@ -125,6 +130,19 @@
         <button id="exe-cancel" class="secondary">Cancel</button>
         <button id="exe-shortcut" class="secondary" disabled>Desktop Shortcut</button>
         <button id="exe-steam" class="primary" disabled hidden>Add to Steam</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Theme picker modal -->
+  <div id="theme-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="theme-backdrop"></div>
+    <div class="modal-card theme-card">
+      <h2>Theme</h2>
+      <div id="theme-grid" class="theme-grid"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="theme-close" class="secondary">Close</button>
       </div>
     </div>
   </div>

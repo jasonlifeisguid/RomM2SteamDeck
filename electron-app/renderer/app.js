@@ -11,10 +11,68 @@ const state = {
   sort: 'name',
   genre: '',
   pinned: [],
+  theme: 'oled-limited',
+  view: 'grid',
   downloads: new Map(), // romId -> DownloadRecord
   progress: new Map(),  // romId -> latest download:event payload
   detailRom: null,
 };
+
+// Color themes — applied by setting CSS variables on :root (ported from the
+// Python app's palette). Programmatic style is allowed under our CSP.
+const THEMES = [
+  { id: 'oled-limited', name: 'OLED Limited', desc: 'Steam Deck orange', dot: '#ff6b00', vars: { '--bg': '#0d0d0d', '--bg-panel': '#161616', '--bg-card': '#1e1e1e', '--bg-hover': '#262626', '--accent': '#ff6b00', '--accent-dim': 'rgba(255,107,0,0.15)', '--text': '#f0f0f0', '--text-muted': '#8a8a8a', '--border': '#2a2a2a' } },
+  { id: 'oled-black', name: 'OLED Black', desc: 'Pure black', dot: '#000000', vars: { '--bg': '#000000', '--bg-panel': '#0a0a0a', '--bg-card': '#121212', '--bg-hover': '#1c1c1c', '--accent': '#ff6b00', '--accent-dim': 'rgba(255,107,0,0.15)', '--text': '#f0f0f0', '--text-muted': '#7a7a7a', '--border': '#1e1e1e' } },
+  { id: 'classic-white', name: 'Classic White', desc: 'Clean light', dot: '#ffffff', vars: { '--bg': '#f4f4f5', '--bg-panel': '#ffffff', '--bg-card': '#ffffff', '--bg-hover': '#eaeaea', '--accent': '#2563eb', '--accent-dim': 'rgba(37,99,235,0.12)', '--text': '#1a1a1a', '--text-muted': '#6b7280', '--border': '#d4d4d8' } },
+  { id: 'monochrome', name: 'Monochrome', desc: 'Black & white', dot: '#888888', vars: { '--bg': '#0d0d0d', '--bg-panel': '#161616', '--bg-card': '#1e1e1e', '--bg-hover': '#2a2a2a', '--accent': '#cfcfcf', '--accent-dim': 'rgba(207,207,207,0.15)', '--text': '#f0f0f0', '--text-muted': '#8a8a8a', '--border': '#333333' } },
+  { id: 'steam-blue', name: 'Steam Blue', desc: 'Classic Steam', dot: '#66c0f4', vars: { '--bg': '#1b2838', '--bg-panel': '#171a21', '--bg-card': '#2a3f5a', '--bg-hover': '#34495e', '--accent': '#66c0f4', '--accent-dim': 'rgba(102,192,244,0.15)', '--text': '#e6eef5', '--text-muted': '#8fa3b8', '--border': '#33475b' } },
+  { id: 'purple-haze', name: 'Purple Haze', desc: 'Deep purple', dot: '#a855f7', vars: { '--bg': '#12091c', '--bg-panel': '#1a0f28', '--bg-card': '#241535', '--bg-hover': '#2f1c45', '--accent': '#a855f7', '--accent-dim': 'rgba(168,85,247,0.18)', '--text': '#f0e9f7', '--text-muted': '#9a86ad', '--border': '#3a2450' } },
+  { id: 'matrix-green', name: 'Matrix Green', desc: 'Retro hacker', dot: '#00ff41', vars: { '--bg': '#000000', '--bg-panel': '#050805', '--bg-card': '#0a120a', '--bg-hover': '#0f1c0f', '--accent': '#00ff41', '--accent-dim': 'rgba(0,255,65,0.15)', '--text': '#c8ffc8', '--text-muted': '#5a8a5a', '--border': '#123512' } },
+  { id: 'crimson-red', name: 'Crimson Red', desc: 'Bold red', dot: '#ef4444', vars: { '--bg': '#1a0d0d', '--bg-panel': '#211010', '--bg-card': '#2e1717', '--bg-hover': '#3a1e1e', '--accent': '#ef4444', '--accent-dim': 'rgba(239,68,68,0.18)', '--text': '#f7e9e9', '--text-muted': '#ad8686', '--border': '#4a2424' } },
+  { id: 'ocean-teal', name: 'Ocean Teal', desc: 'Cool waters', dot: '#2dd4bf', vars: { '--bg': '#07201e', '--bg-panel': '#0a2a27', '--bg-card': '#0f3833', '--bg-hover': '#154842', '--accent': '#2dd4bf', '--accent-dim': 'rgba(45,212,191,0.15)', '--text': '#e0f5f2', '--text-muted': '#7ba8a2', '--border': '#1c4a44' } },
+  { id: 'sunset-gold', name: 'Sunset Gold', desc: 'Warm gold', dot: '#fbbf24', vars: { '--bg': '#1c1408', '--bg-panel': '#241a0b', '--bg-card': '#322510', '--bg-hover': '#3f2f15', '--accent': '#fbbf24', '--accent-dim': 'rgba(251,191,36,0.16)', '--text': '#f7f0e0', '--text-muted': '#ad9d7b', '--border': '#4a3820' } },
+];
+
+function applyTheme(id) {
+  const t = THEMES.find((x) => x.id === id) || THEMES[0];
+  for (const [k, v] of Object.entries(t.vars)) document.documentElement.style.setProperty(k, v);
+  state.theme = t.id;
+}
+
+function renderThemeGrid() {
+  const grid = $('theme-grid');
+  grid.innerHTML = '';
+  for (const t of THEMES) {
+    const el = document.createElement('div');
+    el.className = 'theme-swatch' + (t.id === state.theme ? ' active' : '');
+    const dot = document.createElement('span');
+    dot.className = 'theme-dot';
+    dot.style.background = t.dot;
+    const info = document.createElement('div');
+    const name = document.createElement('div');
+    name.className = 'theme-name';
+    name.textContent = t.name;
+    const desc = document.createElement('div');
+    desc.className = 'theme-desc';
+    desc.textContent = t.desc;
+    info.append(name, desc);
+    el.append(dot, info);
+    el.addEventListener('click', async () => {
+      applyTheme(t.id);
+      renderThemeGrid();
+      await window.r2sd.setConfig({ theme: t.id });
+    });
+    grid.appendChild(el);
+  }
+}
+
+function applyView() {
+  const grid = $('game-grid');
+  grid.classList.toggle('list-view', state.view === 'list');
+  const btn = $('btn-view');
+  btn.innerHTML = state.view === 'list' ? '&#9638;' : '&#9776;'; // ▦ (to grid) / ☰ (to list)
+  btn.title = state.view === 'list' ? 'Switch to grid view' : 'Switch to list view';
+}
 
 // ── Helpers ─────────────────────────────────────────────
 
@@ -77,6 +135,10 @@ async function setAssetSrc(img, romId, serverPath) {
 async function reloadConfig() {
   state.config = await window.r2sd.getConfig();
   state.pinned = state.config.pinnedPlatforms || [];
+  state.theme = state.config.theme || 'oled-limited';
+  state.view = state.config.view === 'list' ? 'list' : 'grid';
+  applyTheme(state.theme);
+  applyView();
 }
 
 async function reloadDownloads() {
@@ -170,6 +232,10 @@ function visibleRoms() {
   const byName = (a, b) => (a.name || a.fs_name || '').localeCompare(b.name || b.fs_name || '');
   if (state.sort === 'size') {
     sorted.sort((a, b) => (b.fs_size_bytes || 0) - (a.fs_size_bytes || 0));
+  } else if (state.sort === 'added') {
+    // Recently added to the RomM library (created_at, newest first)
+    const ts = (r) => (r.created_at ? Date.parse(r.created_at) || 0 : 0);
+    sorted.sort((a, b) => ts(b) - ts(a) || byName(a, b));
   } else if (state.sort === 'year') {
     sorted.sort((a, b) => (romYear(b) || 0) - (romYear(a) || 0) || byName(a, b));
   } else if (state.sort === 'rating') {
@@ -926,6 +992,14 @@ $('genre-filter').addEventListener('change', (e) => {
   state.genre = e.target.value;
   renderGrid();
 });
+$('btn-view').addEventListener('click', async () => {
+  state.view = state.view === 'list' ? 'grid' : 'list';
+  applyView();
+  await window.r2sd.setConfig({ view: state.view });
+});
+$('btn-theme').addEventListener('click', () => { renderThemeGrid(); $('theme-modal').hidden = false; });
+$('theme-close').addEventListener('click', () => { $('theme-modal').hidden = true; });
+$('theme-backdrop').addEventListener('click', () => { $('theme-modal').hidden = true; });
 
 $('btn-close-detail').addEventListener('click', closeDetail);
 $('detail-backdrop').addEventListener('click', closeDetail);
@@ -956,6 +1030,7 @@ $('pf-staging-browse').addEventListener('click', async () => {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
+    $('theme-modal').hidden = true;
     closeExePicker();
     closeDetail();
     closeSettings();

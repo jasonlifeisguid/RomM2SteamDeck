@@ -39,6 +39,7 @@ body {
   padding: 14px 16px;
   border-bottom: 1px solid var(--border);
 }
+.sidebar-header-actions { display: flex; gap: 6px; }
 
 .brand { font-weight: 700; letter-spacing: 1px; color: var(--accent); font-size: 1.1rem; }
 
@@ -196,6 +197,78 @@ input[type="search"] { width: 220px; }
   min-height: 2.5em;
 }
 .game-size { font-size: 0.72rem; color: var(--text-muted); margin-top: 3px; }
+
+/* ── List view ────────────────────────────────────────── */
+.game-grid.list-view {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 14px 20px;
+}
+.game-grid.list-view .game-card {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  min-height: 62px; /* fit the 56px cover thumb (its img is absolutely positioned) */
+}
+.game-grid.list-view .game-card:hover { transform: none; }
+.game-grid.list-view .cover-wrap {
+  width: 42px;
+  min-width: 42px;
+  height: 56px;
+  aspect-ratio: auto;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.game-grid.list-view .cover-wrap::before { font-size: 1rem; }
+.game-grid.list-view .game-meta {
+  flex: 1;
+  min-width: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+}
+.game-grid.list-view .game-name {
+  -webkit-line-clamp: 1;
+  min-height: 0;
+  font-size: 0.9rem;
+}
+.game-grid.list-view .dl-badge {
+  top: 4px; right: 4px; width: 18px; height: 18px; font-size: 0.6rem; border-width: 1px;
+}
+
+/* ── Theme picker ─────────────────────────────────────── */
+.theme-card { width: 460px; }
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 8px;
+}
+.theme-swatch {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+  background: var(--bg-card);
+}
+.theme-swatch:hover { border-color: var(--accent); }
+.theme-swatch.active { border-color: var(--accent); background: var(--accent-dim); }
+.theme-dot {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  border: 2px solid rgba(255,255,255,0.15);
+}
+.theme-swatch .theme-name { font-size: 0.85rem; }
+.theme-swatch .theme-desc { font-size: 0.72rem; color: var(--text-muted); }
 
 /* ── Modal ────────────────────────────────────────────── */
 .modal { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 100; }
