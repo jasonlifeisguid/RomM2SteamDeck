@@ -318,6 +318,96 @@ function updateCardBadge(romId) {
   }
 }
 
+function cardFor(romId) {
+  return document.querySelector(`.game-card[data-rom-id="${romId}"]`);
+}
+
+/** Build (or rebuild) the state-driven quick-action button for one rom. */
+function buildCardActions(rom) {
+  const actions = document.createElement('div');
+  actions.className = 'card-actions';
+  const progress = state.progress.get(rom.id);
+  const downloaded = state.downloads.has(rom.id);
+  const mkBtn = (glyph, title, cls, handler) => {
+    const b = document.createElement('button');
+    b.className = 'card-action-btn ' + cls;
+    b.title = title;
+    b.textContent = glyph;
+    b.addEventListener('click', (e) => { e.stopPropagation(); handler(); });
+    actions.appendChild(b);
+  };
+  if (progress) {
+    mkBtn('✕', 'Cancel download', 'danger', () => window.r2sd.cancelDownload(rom.id));
+  } else if (downloaded) {
+    mkBtn('🗑', 'Delete from disk', 'danger', () => deleteDownloadFor(rom));
+  } else {
+    mkBtn('⬇', 'Download', 'accent', () => quickDownload(rom));
+  }
+  return actions;
+}
+
+function updateCardActions(romId) {
+  const card = cardFor(romId);
+  if (!card) return;
+  const rom = state.roms.find((r) => r.id === romId);
+  if (!rom) return;
+  card.querySelector('.card-actions')?.remove();
+  card.appendChild(buildCardActions(rom));
+}
+
+/** Start a download from a tile/menu using the platform's default install path. */
+function quickDownload(rom) {
+  window.r2sd.startDownload(
+    { id: rom.id, name: rom.name || rom.fs_name, fsName: rom.fs_name, platformId: rom.platform_id, size: rom.fs_size_bytes || 0 },
+    ''
+  );
+  state.progress.set(rom.id, { romId: rom.id, status: 'starting', percent: 0 });
+  updateCardProgress(rom.id);
+  updateCardActions(rom.id);
+}
+
+// ── Right-click context menu ────────────────────────────
+
+function showContextMenu(e, rom) {
+  e.preventDefault();
+  const menu = $('ctx-menu');
+  menu.innerHTML = '';
+  const item = (label, handler, danger) => {
+    const d = document.createElement('div');
+    d.className = 'ctx-item' + (danger ? ' danger' : '');
+    d.textContent = label;
+    d.addEventListener('click', () => { hideContextMenu(); handler(); });
+    menu.appendChild(d);
+  };
+
+  item('Details…', () => openDetail(rom));
+  const progress = state.progress.get(rom.id);
+  const downloaded = state.downloads.has(rom.id);
+  const setup = platformSetup(rom.platform_id);
+  if (progress) {
+    item('Cancel download', () => window.r2sd.cancelDownload(rom.id), true);
+  } else if (downloaded) {
+    if (setup.autoExtract) item('Add to Steam / Shortcut…', () => openExePicker(rom));
+    item('Delete from disk', () => deleteDownloadFor(rom), true);
+  } else {
+    item('Download', () => quickDownload(rom));
+  }
+
+  menu.hidden = false;
+  const mw = menu.offsetWidth;
+  const mh = menu.offsetHeight;
+  menu.style.left = Math.min(e.clientX, window.innerWidth - mw - 6) + 'px';
+  menu.style.top = Math.min(e.clientY, window.innerHeight - mh - 6) + 'px';
+}
+
+function hideContextMenu() {
+  $('ctx-menu').hidden = true;
+}
+
+document.addEventListener('click', hideContextMenu);
+document.addEventListener('scroll', hideContextMenu, true);
+window.addEventListener('blur', hideContextMenu);
+
 function renderGrid() {
   const grid = $('game-grid');
   coverObserver.disconnect();
@@ -333,8 +423,10 @@ function renderGrid() {
   for (const rom of roms) {
     const card = document.createElement('div');
     card.className = 'game-card';
+    card.dataset.romId = rom.id;
     card.title = rom.fs_name || rom.name || '';
     card.addEventListener('click', () => openDetail(rom));
+    card.addEventListener('contextmenu', (e) => showContextMenu(e, rom));
 
     const wrap = document.createElement('div');
     wrap.className = 'cover-wrap';
@@ -365,7 +457,7 @@ function renderGrid() {
     size.textContent = [formatSize(rom.fs_size_bytes), year].filter(Boolean).join(' · ');
     meta.append(name, size);
 
-    card.append(wrap, meta);
+    card.append(wrap, meta, buildCardActions(rom));
     frag.appendChild(card);
   }
   grid.appendChild(frag);
@@ -455,6 +547,7 @@ window.r2sd.onDownloadEvent(async (event) => {
   }
 
   updateCardProgress(romId);
+  updateCardActions(romId);
   if (state.detailRom?.id === romId) refreshDetailActions();
 });
 
@@ -482,6 +575,7 @@ async function deleteDownloadFor(rom) {
   }
   await reloadDownloads();
   updateCardBadge(rom.id);
+  updateCardActions(rom.id);
   refreshDetailActions();
 }
 
