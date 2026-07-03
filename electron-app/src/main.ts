@@ -8,21 +8,21 @@ import * as downloads from './downloads';
 import * as shortcuts from './shortcuts';
 import * as steam from './steam';
 
-// Steam Deck / Linux rendering. Electron's GPU process crashed
-// (SIGSEGV/SIGBUS) on launch — but the culprit was the GPU sandbox / default
-// GL backend, NOT the driver: disabling the GPU sandbox and selecting the EGL
-// backend keeps real hardware acceleration and renders correctly. (Fully
-// disabling the GPU gave a black window, and SwiftShader software rendering
-// gave a gray/unpainted one — hardware via EGL is what actually presents on the
-// Deck's compositor, and it's smoother too.) --no-sandbox is required from an
-// AppImage's read-only mount; --disable-dev-shm-usage avoids /dev/shm limits
-// under Game Mode's gamescope sandbox. Verified on a real Steam Deck. No-ops on
-// Windows/macOS, which keep their default GPU acceleration and sandbox.
+// Steam Deck / Linux rendering. Electron's GPU process crashed on launch
+// against the Deck's stack; the safe baseline is disabling the GPU sandbox
+// (the likely culprit) while leaving the GL backend at its only allowed value
+// (egl-angle / default). --no-sandbox is required from an AppImage's read-only
+// mount; --disable-dev-shm-usage avoids shared-memory limits under Game Mode's
+// gamescope sandbox. Rendering can be tuned per-device via env vars without a
+// rebuild (R2SD_GL / R2SD_ANGLE / R2SD_OZONE), which is how the working combo
+// was found on real hardware. No-ops on Windows/macOS.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
   app.commandLine.appendSwitch('disable-gpu-sandbox');
-  app.commandLine.appendSwitch('use-gl', 'egl');
   app.commandLine.appendSwitch('disable-dev-shm-usage');
+  if (process.env.R2SD_GL) app.commandLine.appendSwitch('use-gl', process.env.R2SD_GL);
+  if (process.env.R2SD_ANGLE) app.commandLine.appendSwitch('use-angle', process.env.R2SD_ANGLE);
+  if (process.env.R2SD_OZONE) app.commandLine.appendSwitch('ozone-platform', process.env.R2SD_OZONE);
 }
 
 // Explicit userData dir. The Electron default (productName "RomM2SteamDeck")
