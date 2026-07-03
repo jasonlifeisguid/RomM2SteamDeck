@@ -8,20 +8,20 @@ import * as downloads from './downloads';
 import * as shortcuts from './shortcuts';
 import * as steam from './steam';
 
-// Steam Deck / Linux rendering. Electron's GPU process segfaults
-// (SIGSEGV/SIGBUS) against the Deck's Mesa/RADV driver — so the app crashed on
-// launch. Fully disabling the GPU (--disable-gpu) stops the crash but renders a
-// BLACK window, because software raster doesn't present to the Wayland
-// compositor. The fix is SwiftShader via ANGLE: the GPU/compositing path stays
-// alive (window renders) but is backed by software GL instead of the real
-// driver (no crash). --no-sandbox is required from an AppImage's read-only
-// mount; --disable-dev-shm-usage avoids /dev/shm limits under Game Mode's
-// gamescope sandbox. Verified on a real Steam Deck. No-ops on Windows/macOS,
-// which keep hardware GPU acceleration and the sandbox.
+// Steam Deck / Linux rendering. Electron's GPU process crashed
+// (SIGSEGV/SIGBUS) on launch — but the culprit was the GPU sandbox / default
+// GL backend, NOT the driver: disabling the GPU sandbox and selecting the EGL
+// backend keeps real hardware acceleration and renders correctly. (Fully
+// disabling the GPU gave a black window, and SwiftShader software rendering
+// gave a gray/unpainted one — hardware via EGL is what actually presents on the
+// Deck's compositor, and it's smoother too.) --no-sandbox is required from an
+// AppImage's read-only mount; --disable-dev-shm-usage avoids /dev/shm limits
+// under Game Mode's gamescope sandbox. Verified on a real Steam Deck. No-ops on
+// Windows/macOS, which keep their default GPU acceleration and sandbox.
 if (process.platform === 'linux') {
   app.commandLine.appendSwitch('no-sandbox');
-  app.commandLine.appendSwitch('use-gl', 'angle');
-  app.commandLine.appendSwitch('use-angle', 'swiftshader');
+  app.commandLine.appendSwitch('disable-gpu-sandbox');
+  app.commandLine.appendSwitch('use-gl', 'egl');
   app.commandLine.appendSwitch('disable-dev-shm-usage');
 }
 
