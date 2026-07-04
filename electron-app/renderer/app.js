@@ -2,6 +2,14 @@
 
 const $ = (id) => document.getElementById(id);
 
+// Crisp inline-SVG icons (the unicode ⬇ rendered thin and line-like)
+const ICON = {
+  download: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v11"/><path d="M7 10l5 5 5-5"/><path d="M4 20h16"/></svg>',
+  trash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 7h16"/><path d="M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/><path d="M6 7l1 13a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1l1-13"/></svg>',
+  cancel: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>',
+  play: '<svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5v14l11-7z"/></svg>',
+};
+
 const state = {
   config: null,        // PublicConfig incl. platform setups
   platforms: [],
@@ -9,6 +17,7 @@ const state = {
   currentPlatformId: null,
   search: '',
   sort: 'name',
+  sortDir: 'asc', // 'asc' | 'desc'
   genre: '',
   pinned: [],
   theme: 'oled-limited',
@@ -236,19 +245,21 @@ function visibleRoms() {
   }
   const sorted = [...roms];
   const byName = (a, b) => (a.name || a.fs_name || '').localeCompare(b.name || b.fs_name || '');
-  if (state.sort === 'size') {
-    sorted.sort((a, b) => (b.fs_size_bytes || 0) - (a.fs_size_bytes || 0));
-  } else if (state.sort === 'added') {
-    // Recently added to the RomM library (created_at, newest first)
-    const ts = (r) => (r.created_at ? Date.parse(r.created_at) || 0 : 0);
-    sorted.sort((a, b) => ts(b) - ts(a) || byName(a, b));
-  } else if (state.sort === 'year') {
-    sorted.sort((a, b) => (romYear(b) || 0) - (romYear(a) || 0) || byName(a, b));
-  } else if (state.sort === 'rating') {
-    sorted.sort((a, b) => (romRating(b) || 0) - (romRating(a) || 0) || byName(a, b));
-  } else {
-    sorted.sort(byName);
-  }
+  const createdTs = (r) => (r.created_at ? Date.parse(r.created_at) || 0 : 0);
+  // Ascending comparators per field; direction is applied uniformly on top.
+  const fieldCmp = {
+    name: byName,
+    added: (a, b) => createdTs(a) - createdTs(b),
+    size: (a, b) => (a.fs_size_bytes || 0) - (b.fs_size_bytes || 0),
+    year: (a, b) => (romYear(a) || 0) - (romYear(b) || 0),
+    rating: (a, b) => (romRating(a) || 0) - (romRating(b) || 0),
+  };
+  const base = fieldCmp[state.sort] || byName;
+  const dir = state.sortDir === 'desc' ? -1 : 1;
+  sorted.sort((a, b) => {
+    const c = base(a, b) * dir;
+    return c !== 0 ? c : byName(a, b); // stable A-Z tiebreak
+  });
   return sorted;
 }
 
@@ -314,25 +325,33 @@ function updateCardProgress(romId) {
   }
 }
 
+/** Green Play/installed badge. For extractable PC games it's a clickable Play
+ *  button (launches the default exe, or opens the exe picker to choose one). */
+function makeBadge(rom) {
+  if (!state.downloads.has(rom.id)) return null;
+  const badge = document.createElement('div');
+  badge.className = 'dl-badge';
+  badge.innerHTML = ICON.play;
+  if (platformSetup(rom.platform_id).autoExtract) {
+    badge.classList.add('playable');
+    const rec = state.downloads.get(rom.id);
+    badge.title = rec && rec.defaultExe ? 'Play' : 'Play (choose executable)';
+    badge.addEventListener('click', (e) => { e.stopPropagation(); playGame(rom); });
+  } else {
+    badge.title = 'Installed';
+  }
+  return badge;
+}
+
 function updateCardBadge(romId) {
   const wrap = coverWrapFor(romId);
   if (!wrap) return;
-  let badge = wrap.querySelector('.dl-badge');
-  const installed = state.downloads.has(romId);
-  if (installed) {
-    if (!badge) {
-      badge = document.createElement('div');
-      badge.className = 'dl-badge';
-      badge.title = 'Installed — ready to play';
-      badge.textContent = '▶';
-      wrap.appendChild(badge);
-    }
-  } else {
-    badge?.remove();
-  }
+  wrap.querySelector('.dl-badge')?.remove();
+  const rom = state.roms.find((r) => r.id === romId);
+  if (rom) { const b = makeBadge(rom); if (b) wrap.appendChild(b); }
   // Keep the list-view "Installed" label in sync
   const statusEl = cardFor(romId)?.querySelector('.list-status');
-  if (statusEl) statusEl.textContent = installed ? 'Installed' : '';
+  if (statusEl) statusEl.textContent = state.downloads.has(romId) ? 'Installed' : '';
 }
 
 function cardFor(romId) {
@@ -345,20 +364,20 @@ function buildCardActions(rom) {
   actions.className = 'card-actions';
   const qs = queueStatusFor(rom.id);
   const downloaded = state.downloads.has(rom.id);
-  const mkBtn = (glyph, title, cls, handler) => {
+  const mkBtn = (icon, title, cls, handler) => {
     const b = document.createElement('button');
     b.className = 'card-action-btn ' + cls;
     b.title = title;
-    b.textContent = glyph;
+    b.innerHTML = icon;
     b.addEventListener('click', (e) => { e.stopPropagation(); handler(); });
     actions.appendChild(b);
   };
   if (qs) {
-    mkBtn('✕', qs === 'queued' ? 'Remove from queue' : 'Cancel download', 'danger', () => window.r2sd.cancelDownload(rom.id));
+    mkBtn(ICON.cancel, qs === 'queued' ? 'Remove from queue' : 'Cancel download', 'danger', () => window.r2sd.cancelDownload(rom.id));
   } else if (downloaded) {
-    mkBtn('🗑', 'Delete from disk', 'danger', () => deleteDownloadFor(rom));
+    mkBtn(ICON.trash, 'Delete from disk', 'danger', () => deleteDownloadFor(rom));
   } else {
-    mkBtn('⬇', 'Download', 'accent', () => quickDownload(rom));
+    mkBtn(ICON.download, 'Download', 'accent', () => quickDownload(rom));
   }
   return actions;
 }
@@ -462,13 +481,8 @@ function renderGrid() {
     wrap.appendChild(img);
     coverObserver.observe(wrap);
 
-    if (state.downloads.has(rom.id)) {
-      const badge = document.createElement('div');
-      badge.className = 'dl-badge';
-      badge.title = 'Installed — ready to play';
-      badge.textContent = '▶';
-      wrap.appendChild(badge);
-    }
+    const badge = makeBadge(rom);
+    if (badge) wrap.appendChild(badge);
 
     const meta = document.createElement('div');
     meta.className = 'game-meta';
@@ -813,6 +827,7 @@ async function openExePicker(rom) {
   $('exe-shortcut').disabled = true;
   $('exe-steam').disabled = true;
   $('exe-play').disabled = true;
+  $('exe-setdefault').disabled = true;
   $('exe-list').innerHTML = '<p class="muted small">Scanning for executables…</p>';
 
   // Native "Add to Steam" only shown when a Steam install is found; the
@@ -827,26 +842,40 @@ async function openExePicker(rom) {
     $('exe-list').innerHTML = '<p class="error small">No .exe files found in the installed folder.</p>';
     return;
   }
+  const currentDefault = state.downloads.get(rom.id)?.defaultExe;
+  const enableActions = () => {
+    $('exe-shortcut').disabled = false;
+    $('exe-steam').disabled = false;
+    $('exe-play').disabled = false;
+    $('exe-setdefault').disabled = false;
+  };
   $('exe-list').innerHTML = '';
   exes.forEach((exe, i) => {
+    const isDefault = exe.path === currentDefault;
     const label = document.createElement('label');
-    label.className = 'exe-option';
+    label.className = 'exe-option' + (isDefault ? ' selected' : '');
     const radio = document.createElement('input');
     radio.type = 'radio';
     radio.name = 'exe';
     radio.value = String(i);
+    if (isDefault) { radio.checked = true; exeSelected = exe; }
     radio.addEventListener('change', () => {
       exeSelected = exe;
-      $('exe-shortcut').disabled = false;
-      $('exe-steam').disabled = false;
-      $('exe-play').disabled = false;
+      enableActions();
       document.querySelectorAll('.exe-option').forEach((el, j) => el.classList.toggle('selected', j === i));
     });
     const span = document.createElement('span');
     span.textContent = exe.relativePath;
     label.append(radio, span);
+    if (isDefault) {
+      const tag = document.createElement('span');
+      tag.className = 'exe-default-tag';
+      tag.textContent = '★ default';
+      label.appendChild(tag);
+    }
     $('exe-list').appendChild(label);
   });
+  if (exeSelected) enableActions(); // a default was pre-selected
 }
 
 function closeExePicker() {
@@ -861,6 +890,17 @@ async function createShortcut() {
   closeExePicker();
   if (res.error) toast(res.error, 'error');
   else toast('Desktop shortcut created', 'success');
+}
+
+async function setDefaultFromPicker() {
+  if (!exeSelected || !exePickerRom) return;
+  const rom = exePickerRom;
+  await window.r2sd.setDefaultExe(rom.id, exeSelected.path);
+  await reloadDownloads();
+  toast('Default executable set', 'success');
+  updateCardBadge(rom.id);
+  if (state.detailRom?.id === rom.id) refreshDetailActions();
+  openExePicker(rom); // refresh the ★ default marker
 }
 
 async function playFromPicker() {
@@ -1235,10 +1275,27 @@ $('search').addEventListener('input', (e) => {
   state.search = e.target.value;
   renderGrid();
 });
+// Sensible default direction when a sort field is chosen
+const SORT_DEFAULT_DIR = { name: 'asc', added: 'desc', size: 'desc', year: 'desc', rating: 'desc' };
+
+function updateSortDirButton() {
+  const btn = $('btn-sortdir');
+  btn.innerHTML = state.sortDir === 'asc' ? '&#9650;' : '&#9660;'; // ▲ / ▼
+  btn.title = state.sortDir === 'asc' ? 'Ascending (click for descending)' : 'Descending (click for ascending)';
+}
+
 $('sort').addEventListener('change', (e) => {
   state.sort = e.target.value;
+  state.sortDir = SORT_DEFAULT_DIR[state.sort] || 'asc';
+  updateSortDirButton();
   renderGrid();
 });
+$('btn-sortdir').addEventListener('click', () => {
+  state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
+  updateSortDirButton();
+  renderGrid();
+});
+updateSortDirButton();
 $('genre-filter').addEventListener('change', (e) => {
   state.genre = e.target.value;
   renderGrid();
@@ -1263,6 +1320,7 @@ $('exe-backdrop').addEventListener('click', closeExePicker);
 $('exe-shortcut').addEventListener('click', createShortcut);
 $('exe-steam').addEventListener('click', addToSteam);
 $('exe-play').addEventListener('click', playFromPicker);
+$('exe-setdefault').addEventListener('click', setDefaultFromPicker);
 $('btn-play').addEventListener('click', () => state.detailRom && playGame(state.detailRom));
 
 $('btn-platforms').addEventListener('click', () => { closeSettings(); openPlatformsModal(); });
