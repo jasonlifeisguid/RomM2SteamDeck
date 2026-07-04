@@ -394,6 +394,15 @@ function clearStaleSingletonLock(): void {
     let alive = false;
     try { process.kill(pid, 0); alive = true; } // signal 0 = existence check
     catch (e) { alive = (e as NodeJS.ErrnoException).code === 'EPERM'; } // exists but not ours
+    if (alive) {
+      // Guard against PID reuse (common after a reboot): only respect the lock
+      // if that PID is actually one of our processes, not some unrelated one
+      // that happened to inherit the number.
+      try {
+        const comm = fs.readFileSync(`/proc/${pid}/comm`, 'utf8');
+        if (!comm.includes('romm2steamdeck')) alive = false;
+      } catch { alive = false; }
+    }
     if (alive) return;
     for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
       try { fs.unlinkSync(path.join(userDataDir, f)); } catch { /* already gone */ }

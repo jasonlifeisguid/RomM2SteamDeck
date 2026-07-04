@@ -105,6 +105,12 @@ function decryptStored(stored: StoredConfig): string | null {
   if (!blob) return null;
   try {
     if (blob.startsWith('ob:')) return xorCode(Buffer.from(blob.slice(3), 'base64')).toString('utf8');
+    // On Linux we NEVER touch the OS keyring. Beyond being unreliable across
+    // Desktop<->Game Mode, a safeStorage call can BLOCK on a dbus timeout in
+    // Game Mode (no secret service) — and this runs at boot (getPublicConfig /
+    // isConfigured), which would freeze startup before the window appears.
+    // An 'ss:'/legacy blob on Linux therefore just means "re-enter the password".
+    if (process.platform === 'linux') return null;
     if (blob.startsWith('ss:')) return safeStorage.decryptString(Buffer.from(blob.slice(3), 'base64'));
     // Legacy: raw base64 of a safeStorage blob (may be undecodable here → re-entry).
     return safeStorage.decryptString(Buffer.from(blob, 'base64'));
