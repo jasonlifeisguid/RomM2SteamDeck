@@ -265,9 +265,11 @@ function registerIpc(): void {
   ipcMain.handle('app:platform', () => process.platform);
   ipcMain.handle('app:version', () => app.getVersion());
   // Clean quit — essential in Game Mode, where there's no window chrome to close.
-  // Going through app.quit() releases the single-instance lock properly (a
-  // brute-force kill leaves it, which is what strands the next launch).
-  ipcMain.handle('app:quit', () => { app.quit(); });
+  // Use app.exit(0), not app.quit(): a graceful quit can stall on a lingering
+  // child (e.g. the Steam Overlay), leaving gamescope on a black screen with no
+  // "game exited" signal. A hard exit tears the whole tree down deterministically
+  // so Steam returns to the library. Config/downloads are already persisted.
+  ipcMain.handle('app:quit', () => { app.exit(0); });
 
   // Desktop shortcuts for extracted PC games
   ipcMain.handle('game:listExes', (_e, romId: number) => {

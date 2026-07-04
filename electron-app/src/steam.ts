@@ -158,6 +158,8 @@ export interface AddResult {
   targetUser?: string;
   /** True when the running Steam client did the write (steam:// path), so no restart is needed. */
   live?: boolean;
+  /** True when an existing shortcut was updated (e.g. Steam Overlay turned off) rather than added. */
+  repaired?: boolean;
   method?: 'file' | 'steamos-add-to-steam' | 'steam-url';
 }
 
@@ -177,7 +179,11 @@ export function buildShortcutEntry(exePath: string, appName: string, startDir?: 
     LaunchOptions: '',
     IsHidden: 0,
     AllowDesktopConfig: 1,
-    AllowOverlay: 1,
+    // Overlay OFF: gameoverlayrenderer.so injects threads before Electron starts,
+    // and Electron's startup fork() then races those threads — intermittently
+    // deadlocking the launch (and the exit) under gamescope/Game Mode. Disabling
+    // the overlay for this shortcut removes the injection and the race.
+    AllowOverlay: 0,
     OpenVR: 0,
     Devkit: 0,
     DevkitGameID: '',
@@ -220,13 +226,27 @@ export function addNonSteamGame(exePath: string, appName: string, opts: { startD
     }
 
     const shortcuts = (root.shortcuts as VdfMap) || (root.shortcuts = {} as VdfMap);
-
-    // Duplicate check: same Exe already present?
     const quotedExe = `"${exePath}"`;
+
+    // Force the Steam Overlay OFF on every existing R2SD shortcut (it races
+    // Electron's startup fork and intermittently deadlocks Game Mode). This also
+    // repairs duplicate/older entries added earlier via the live path.
+    let exactExists = false;
+    let changed = false;
     for (const entry of Object.values(shortcuts)) {
-      if (entry && typeof entry === 'object' && (entry as VdfMap).Exe === quotedExe) {
-        return { ok: true, alreadyPresent: true, appName, targetUser: target.user, appId: (entry as VdfMap).appid as number };
+      if (!entry || typeof entry !== 'object') continue;
+      const e = entry as VdfMap;
+      const exe = typeof e.Exe === 'string' ? e.Exe : '';
+      if (e.Exe === quotedExe) exactExists = true;
+      if ((e.Exe === quotedExe || /RomM2SteamDeck[^"]*\.AppImage/i.test(exe)) && e.AllowOverlay !== 0) {
+        e.AllowOverlay = 0;
+        changed = true;
       }
+    }
+
+    // Nothing to do: it's already present and overlay is already off.
+    if (exactExists && !changed) {
+      return { ok: true, alreadyPresent: true, appName, targetUser: target.user };
     }
 
     // Back up before writing
@@ -236,10 +256,14 @@ export function addNonSteamGame(exePath: string, appName: string, opts: { startD
       fs.writeFileSync(backupPath, original);
     }
 
-    // Append with the next numeric index
-    const nextIndex = Object.keys(shortcuts).length;
-    const entry = buildShortcutEntry(exePath, appName, opts.startDir, opts.tags);
-    shortcuts[String(nextIndex)] = entry;
+    // Add the entry only if it's not already there (otherwise we just repaired it).
+    let appId = 0;
+    if (!exactExists) {
+      const nextIndex = Object.keys(shortcuts).length;
+      const entry = buildShortcutEntry(exePath, appName, opts.startDir, opts.tags);
+      shortcuts[String(nextIndex)] = entry;
+      appId = entry.appid as number;
+    }
 
     // Atomic write
     const out = serializeVdf(root);
@@ -247,7 +271,7 @@ export function addNonSteamGame(exePath: string, appName: string, opts: { startD
     fs.writeFileSync(tmp, out);
     fs.renameSync(tmp, target.shortcutsPath);
 
-    return { ok: true, appId: entry.appid as number, appName, backupPath, targetUser: target.user, method: 'file' };
+    return { ok: true, appId, appName, backupPath, targetUser: target.user, method: 'file', repaired: exactExists && changed };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

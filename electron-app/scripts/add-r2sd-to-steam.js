@@ -127,7 +127,7 @@ function buildShortcutEntry(exePath, appName, iconPath) {
     LaunchOptions: '',
     IsHidden: 0,
     AllowDesktopConfig: 1,
-    AllowOverlay: 1,
+    AllowOverlay: 0, // overlay races Electron's startup fork → Game Mode deadlock
     OpenVR: 0,
     Devkit: 0,
     DevkitGameID: '',

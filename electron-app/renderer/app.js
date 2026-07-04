@@ -1292,9 +1292,10 @@ $('btn-add-self-steam').addEventListener('click', async () => {
     return;
   }
   out.className = 'small success';
-  if (res.alreadyPresent) out.textContent = 'RomM2SteamDeck is already in your Steam library.';
-  else if (res.live) out.textContent = 'Added to Steam — it will appear in your library shortly. Rename & add art in Steam.';
-  else out.textContent = 'Added to Steam — restart Steam to see it in your library.';
+  if (res.repaired) out.textContent = 'Fixed the R2SD Steam shortcut (disabled the overlay). Restart Steam / relaunch in Game Mode.';
+  else if (res.alreadyPresent) out.textContent = 'RomM2SteamDeck is already in your Steam library (overlay off).';
+  else if (res.live) out.textContent = 'Added to Steam — it will appear shortly. NOTE: to disable the overlay (recommended for Game Mode), run this again from Desktop Mode with Steam closed.';
+  else out.textContent = 'Added to Steam (overlay off) — restart Steam to see it.';
 });
 $('btn-refresh').addEventListener('click', () => {
   if (state.currentPlatformId !== null) selectPlatform(state.currentPlatformId, true);
