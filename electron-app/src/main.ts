@@ -27,12 +27,15 @@ if (process.platform === 'linux') {
       app.commandLine.appendSwitch(k, v);
     }
   } else {
-    app.commandLine.appendSwitch('no-sandbox');
+    // THE fix for the SteamOS black window: do NOT pass --no-sandbox. It was
+    // added for AppImage compatibility, but on SteamOS/Plasma it breaks the GPU
+    // buffer path and renders a black window (verified: --no-sandbox → black,
+    // without it → the UI renders). The Chromium namespace sandbox works here.
+    // --disable-gpu-sandbox is harmless and kept as a small stability hedge.
+    // (--disable-dev-shm-usage was also removed: on SteamOS it forces Chromium
+    // onto /tmp where shm creation fails with a 57k-error flood.)
+    // If a host lacks user namespaces and won't start, set R2SD_FLAGS=--no-sandbox.
     app.commandLine.appendSwitch('disable-gpu-sandbox');
-    // NOTE: --disable-dev-shm-usage was removed from the defaults — on SteamOS
-    // it forced Chromium onto /tmp where shm creation fails (a 57k-error flood),
-    // while the default /dev/shm works fine. Re-add it per device via R2SD_FLAGS
-    // if a constrained sandbox (e.g. gamescope) ever needs it.
     if (process.env.R2SD_GL) app.commandLine.appendSwitch('use-gl', process.env.R2SD_GL);
     if (process.env.R2SD_ANGLE) app.commandLine.appendSwitch('use-angle', process.env.R2SD_ANGLE);
     if (process.env.R2SD_OZONE) app.commandLine.appendSwitch('ozone-platform', process.env.R2SD_OZONE);
