@@ -1115,6 +1115,8 @@ async function openSettings() {
   $('cfg-password').value = '';
   $('cfg-password').placeholder = cfg.hasPassword ? '(unchanged)' : '';
   $('cfg-test-result').textContent = '';
+  // "Add R2SD to Steam" only makes sense when a Steam install is found.
+  window.r2sd.steamStatus().then((s) => { $('btn-add-self-steam').hidden = !s.found; });
   $('settings-modal').hidden = false;
 }
 
@@ -1267,6 +1269,24 @@ $('btn-clear-cache').addEventListener('click', async () => {
   await window.r2sd.clearCache();
   $('cfg-test-result').className = 'small success';
   $('cfg-test-result').textContent = 'Cache cleared.';
+});
+$('btn-add-self-steam').addEventListener('click', async () => {
+  const btn = $('btn-add-self-steam');
+  const out = $('cfg-test-result');
+  btn.disabled = true;
+  out.className = 'small';
+  out.textContent = 'Adding to Steam…';
+  const res = await window.r2sd.addSelfToSteam();
+  btn.disabled = false;
+  if (res.error) {
+    out.className = 'small error';
+    out.textContent = res.error;
+    return;
+  }
+  out.className = 'small success';
+  if (res.alreadyPresent) out.textContent = 'RomM2SteamDeck is already in your Steam library.';
+  else if (res.live) out.textContent = 'Added to Steam — it will appear in your library shortly. Rename & add art in Steam.';
+  else out.textContent = 'Added to Steam — restart Steam to see it in your library.';
 });
 $('btn-refresh').addEventListener('click', () => {
   if (state.currentPlatformId !== null) selectPlatform(state.currentPlatformId, true);

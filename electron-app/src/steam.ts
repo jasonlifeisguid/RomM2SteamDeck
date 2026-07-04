@@ -290,6 +290,26 @@ export function addNonSteamGameLive(exePath: string): AddResult {
   if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
   try { fs.chmodSync(exePath, 0o755); } catch { /* best effort — AppImages/binaries must be executable */ }
 
+  // Best-effort read-only dedup: the live protocol has no "already added" check,
+  // so a repeated click would create a duplicate. Reading shortcuts.vdf while
+  // Steam runs is safe (we never write it here). This catches cross-session
+  // dupes; a same-session re-add that Steam hasn't flushed yet may still slip
+  // through, which matches Valve's own menu.
+  try {
+    const quoted = `"${exePath}"`;
+    for (const u of findSteamUsers()) {
+      if (!fs.existsSync(u.shortcutsPath)) continue;
+      const existing = parseVdf(fs.readFileSync(u.shortcutsPath));
+      const sc = existing.shortcuts as VdfMap | undefined;
+      if (!sc) continue;
+      for (const e of Object.values(sc)) {
+        if (e && typeof e === 'object' && (e as VdfMap).Exe === quoted) {
+          return { ok: true, alreadyPresent: true, live: true, targetUser: u.user };
+        }
+      }
+    }
+  } catch { /* unreadable/odd format — just proceed to add */ }
+
   // Prefer Valve's own helper: it handles mime detection, exact URL encoding,
   // and the /tmp marker, so we match the Dolphin context menu byte-for-byte.
   const helper = commandPath('steamos-add-to-steam');

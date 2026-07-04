@@ -52,6 +52,22 @@ const userDataDir = path.join(app.getPath('appData'), 'romm2steamdeck-app');
 app.setPath('userData', userDataDir);
 migrateLegacyUserData();
 
+/**
+ * The path Steam should launch to run R2SD itself. For an AppImage this is the
+ * outer .AppImage (Electron sets APPIMAGE), NOT process.execPath (which points
+ * inside the read-only mount). Returns null in a dev run, where there's no
+ * stable launcher to register.
+ */
+function selfLauncherPath(): string | null {
+  if (process.platform === 'linux') return process.env.APPIMAGE || null;
+  if (process.platform === 'win32') return app.isPackaged ? process.execPath : null;
+  if (process.platform === 'darwin') {
+    const m = process.execPath.match(/^(.*\.app)\//); // .../R2SD.app/Contents/MacOS/R2SD → the .app
+    return m ? m[1] : null;
+  }
+  return null;
+}
+
 /** One-time untangle of the shared %APPDATA%\romm2steamdeck directory. */
 function migrateLegacyUserData(): void {
   const legacyDir = path.join(app.getPath('appData'), 'romm2steamdeck');
@@ -280,6 +296,14 @@ function registerIpc(): void {
   ipcMain.handle('steam:add', (_e, exePath: string, appName: string) =>
     steam.addNonSteamGameSmart(exePath, appName, { tags: ['RomM'] })
   );
+  // Add R2SD *itself* to Steam (Settings button). Uses the same hybrid path.
+  ipcMain.handle('steam:addSelf', () => {
+    const self = selfLauncherPath();
+    if (!self) {
+      return { ok: false, error: 'This works from the packaged app (installed .exe / AppImage / .app), not a dev run.' };
+    }
+    return steam.addNonSteamGameSmart(self, 'RomM2SteamDeck', { tags: ['RomM'] });
+  });
 
   ipcMain.handle('downloads:sync', (_e, platformId: number) => {
     const cached = cache.readCache<RommRom[]>(`roms-${platformId}`);
