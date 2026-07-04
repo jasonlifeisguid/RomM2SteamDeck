@@ -17,12 +17,26 @@ import * as steam from './steam';
 // rebuild (R2SD_GL / R2SD_ANGLE / R2SD_OZONE), which is how the working combo
 // was found on real hardware. No-ops on Windows/macOS.
 if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('no-sandbox');
-  app.commandLine.appendSwitch('disable-gpu-sandbox');
-  app.commandLine.appendSwitch('disable-dev-shm-usage');
-  if (process.env.R2SD_GL) app.commandLine.appendSwitch('use-gl', process.env.R2SD_GL);
-  if (process.env.R2SD_ANGLE) app.commandLine.appendSwitch('use-angle', process.env.R2SD_ANGLE);
-  if (process.env.R2SD_OZONE) app.commandLine.appendSwitch('ozone-platform', process.env.R2SD_OZONE);
+  // Full override for device tuning/diagnostics: R2SD_FLAGS is a space-separated
+  // list of Chromium switches ("--no-sandbox --use-gl=angle"); an empty string
+  // means "no flags at all". When unset, use the safe defaults plus optional
+  // per-switch env overrides.
+  if (process.env.R2SD_FLAGS !== undefined) {
+    for (const f of process.env.R2SD_FLAGS.split(/\s+/).filter(Boolean)) {
+      const [k, v] = f.replace(/^--/, '').split('=');
+      app.commandLine.appendSwitch(k, v);
+    }
+  } else {
+    app.commandLine.appendSwitch('no-sandbox');
+    app.commandLine.appendSwitch('disable-gpu-sandbox');
+    // NOTE: --disable-dev-shm-usage was removed from the defaults — on SteamOS
+    // it forced Chromium onto /tmp where shm creation fails (a 57k-error flood),
+    // while the default /dev/shm works fine. Re-add it per device via R2SD_FLAGS
+    // if a constrained sandbox (e.g. gamescope) ever needs it.
+    if (process.env.R2SD_GL) app.commandLine.appendSwitch('use-gl', process.env.R2SD_GL);
+    if (process.env.R2SD_ANGLE) app.commandLine.appendSwitch('use-angle', process.env.R2SD_ANGLE);
+    if (process.env.R2SD_OZONE) app.commandLine.appendSwitch('ozone-platform', process.env.R2SD_OZONE);
+  }
 }
 
 // Explicit userData dir. The Electron default (productName "RomM2SteamDeck")
