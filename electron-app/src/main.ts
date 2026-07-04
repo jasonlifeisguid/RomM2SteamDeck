@@ -1,5 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { RommClient, RommPlatform, RommRom } from './romm';
 import * as config from './config';
@@ -364,6 +365,38 @@ function createWindow(): void {
     mainWindow = null;
   });
 }
+
+/**
+ * Remove a Chromium "Singleton" profile lock that points to a process that is
+ * no longer alive. On the Steam Deck this is the difference between the app
+ * launching and hanging forever: switching Desktop↔Game Mode (or a crash) can
+ * leave a stale SingletonLock, and Electron's own reclaim doesn't recover
+ * cleanly under gamescope — requestSingleInstanceLock() returns false, app.quit()
+ * fires, and the already-forked Chromium zygote is orphaned, so Steam's launch
+ * reaper spins forever with no window and no way to cancel. We only delete the
+ * lock when it points to a DEAD pid on THIS host, so a genuinely running second
+ * instance is still respected.
+ */
+function clearStaleSingletonLock(): void {
+  if (process.platform === 'win32') return; // Windows doesn't use these symlinks
+  try {
+    const lock = path.join(userDataDir, 'SingletonLock');
+    const target = fs.readlinkSync(lock); // "<hostname>-<pid>"
+    const dash = target.lastIndexOf('-');
+    if (dash < 0) return;
+    if (target.slice(0, dash) !== os.hostname()) return; // lock from another machine
+    const pid = Number(target.slice(dash + 1));
+    if (!Number.isInteger(pid) || pid <= 0) return;
+    let alive = false;
+    try { process.kill(pid, 0); alive = true; } // signal 0 = existence check
+    catch (e) { alive = (e as NodeJS.ErrnoException).code === 'EPERM'; } // exists but not ours
+    if (alive) return;
+    for (const f of ['SingletonLock', 'SingletonSocket', 'SingletonCookie']) {
+      try { fs.unlinkSync(path.join(userDataDir, f)); } catch { /* already gone */ }
+    }
+  } catch { /* no lock / not a symlink — nothing stale to clear */ }
+}
+clearStaleSingletonLock();
 
 // Single instance — a second launch focuses the existing window instead
 if (!app.requestSingleInstanceLock()) {
