@@ -59,6 +59,7 @@
     "linux": {
       "icon": "build/icon.png",
       "category": "Game",
+      "artifactName": "RomM2SteamDeck.AppImage",
       "target": [
         "AppImage"
       ]
