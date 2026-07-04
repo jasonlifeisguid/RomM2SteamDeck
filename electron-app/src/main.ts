@@ -275,9 +275,10 @@ function registerIpc(): void {
     found: steam.findSteamRoot() !== null,
     running: steam.isSteamRunning(),
     users: steam.findSteamUsers().length,
+    canAddLive: steam.canAddLive(),
   }));
   ipcMain.handle('steam:add', (_e, exePath: string, appName: string) =>
-    steam.addNonSteamGame(exePath, appName, { tags: ['RomM'] })
+    steam.addNonSteamGameSmart(exePath, appName, { tags: ['RomM'] })
   );
 
   ipcMain.handle('downloads:sync', (_e, platformId: number) => {

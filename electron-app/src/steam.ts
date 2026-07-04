@@ -13,7 +13,7 @@
  *
  * No electron imports — unit-testable standalone.
  */
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -156,6 +156,9 @@ export interface AddResult {
   alreadyPresent?: boolean;
   backupPath?: string;
   targetUser?: string;
+  /** True when the running Steam client did the write (steam:// path), so no restart is needed. */
+  live?: boolean;
+  method?: 'file' | 'steamos-add-to-steam' | 'steam-url';
 }
 
 export function buildShortcutEntry(exePath: string, appName: string, startDir?: string, tags: string[] = []): VdfMap {
@@ -244,8 +247,79 @@ export function addNonSteamGame(exePath: string, appName: string, opts: { startD
     fs.writeFileSync(tmp, out);
     fs.renameSync(tmp, target.shortcutsPath);
 
-    return { ok: true, appId: entry.appid as number, appName, backupPath, targetUser: target.user };
+    return { ok: true, appId: entry.appid as number, appName, backupPath, targetUser: target.user, method: 'file' };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+}
+
+// ── Add to a RUNNING Steam (SteamOS / Linux) ─────────────────────────────
+//
+// This is how Valve's own Dolphin "Add to Steam" context menu works, and it's
+// the only safe way to add a shortcut while Steam is running: don't touch
+// shortcuts.vdf at all — fire a steam:// URL at the live client and let STEAM
+// write the file (it owns it in memory and rewrites it on exit, so any file we
+// wrote underneath would be clobbered or corrupt the user's other shortcuts).
+//
+// Valve's chain is: Dolphin service menu → /usr/bin/steamos-add-to-steam →
+//   steam "steam://addnonsteamgame/<url-encoded-abs-path>"
+// with a touch of /tmp/addnonsteamgamefile as a marker that tells the client to
+// add directly instead of opening the interactive "browse for a game" dialog.
+//
+// Tradeoff vs the file method: no control over the display name / icon / tags —
+// Steam names the entry after the file. Artwork/renaming is done in Steam
+// afterwards (e.g. Decky + SteamGridDB).
+
+function commandPath(cmd: string): string | null {
+  try {
+    const out = execSync(`command -v ${cmd} 2>/dev/null`, { encoding: 'utf8', shell: '/bin/sh' }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Can we add to a running Steam on this box? (Linux with Steam's helper or the steam binary.) */
+export function canAddLive(): boolean {
+  if (process.platform !== 'linux') return false;
+  return commandPath('steamos-add-to-steam') !== null || commandPath('steam') !== null;
+}
+
+export function addNonSteamGameLive(exePath: string): AddResult {
+  if (process.platform !== 'linux') return { ok: false, error: 'Live add is only supported on SteamOS / Linux.' };
+  if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
+  try { fs.chmodSync(exePath, 0o755); } catch { /* best effort — AppImages/binaries must be executable */ }
+
+  // Prefer Valve's own helper: it handles mime detection, exact URL encoding,
+  // and the /tmp marker, so we match the Dolphin context menu byte-for-byte.
+  const helper = commandPath('steamos-add-to-steam');
+  try {
+    if (helper) {
+      // No -ui: that flag routes errors to kdialog; we want them on stderr.
+      execFileSync(helper, [exePath], { stdio: 'pipe', timeout: 15000 });
+      return { ok: true, live: true, method: 'steamos-add-to-steam' };
+    }
+    // Fallback (non-SteamOS Linux with Steam installed): emit the URL ourselves.
+    const steamBin = commandPath('steam');
+    if (!steamBin) return { ok: false, error: 'Steam is running but neither steamos-add-to-steam nor the steam command was found.' };
+    try { fs.writeFileSync('/tmp/addnonsteamgamefile', ''); } catch { /* marker is best-effort */ }
+    const url = `steam://addnonsteamgame/${encodeURIComponent(exePath)}`;
+    execFileSync(steamBin, [url], { stdio: 'pipe', timeout: 15000 });
+    return { ok: true, live: true, method: 'steam-url' };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
+ * Add a non-Steam game the best way for the current state:
+ *  - Linux + Steam running → hand it to the live client (works in Game Mode).
+ *  - otherwise → the byte-safe shortcuts.vdf write (nicer: sets name/icon/tags,
+ *    but needs Steam closed).
+ */
+export function addNonSteamGameSmart(exePath: string, appName: string, opts: { startDir?: string; tags?: string[] } = {}): AddResult {
+  if (process.platform === 'linux' && isSteamRunning() && canAddLive()) {
+    return addNonSteamGameLive(exePath);
+  }
+  return addNonSteamGame(exePath, appName, opts);
 }

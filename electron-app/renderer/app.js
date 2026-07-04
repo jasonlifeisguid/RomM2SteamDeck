@@ -937,6 +937,7 @@ async function addToSteam() {
   }
   closeExePicker();
   if (res.alreadyPresent) toast('Already in your Steam library', 'success');
+  else if (res.live) toast('Added to Steam — it will appear in your library shortly', 'success');
   else toast('Added to Steam — restart Steam to see it in your library', 'success');
 }
 

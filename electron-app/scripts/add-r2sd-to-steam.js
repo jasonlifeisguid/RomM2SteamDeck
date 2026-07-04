@@ -22,7 +22,7 @@
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { execSync } = require('child_process');
+const { execSync, execFileSync } = require('child_process');
 
 // ── Binary VDF parse / serialize (mirrors src/steam.ts) ──────────────────
 function parseVdf(buf) {
@@ -179,6 +179,34 @@ function extractIcon(appImage) {
   } catch { return ''; }
 }
 
+// Add to a RUNNING Steam via the steam:// protocol (Valve's Dolphin method).
+// Lets Steam itself write the shortcut, so it's safe while Steam is open — the
+// only way to add in Game Mode. Tradeoff: Steam names the entry after the file
+// (rename/art in Steam afterwards). Returns { ok, method } or { ok:false,error }.
+function commandPath(cmd) {
+  try {
+    const out = execSync(`command -v ${cmd} 2>/dev/null`, { encoding: 'utf8', shell: '/bin/sh' }).trim();
+    return out || null;
+  } catch { return null; }
+}
+function addLive(appImage) {
+  try { fs.chmodSync(appImage, 0o755); } catch { /* best effort */ }
+  const helper = commandPath('steamos-add-to-steam');
+  try {
+    if (helper) {
+      execFileSync(helper, [appImage], { stdio: 'pipe', timeout: 15000 });
+      return { ok: true, method: 'steamos-add-to-steam' };
+    }
+    const steamBin = commandPath('steam');
+    if (!steamBin) return { ok: false, error: 'Steam is running but neither steamos-add-to-steam nor the steam command was found.' };
+    try { fs.writeFileSync('/tmp/addnonsteamgamefile', ''); } catch { /* marker best-effort */ }
+    execFileSync(steamBin, [`steam://addnonsteamgame/${encodeURIComponent(appImage)}`], { stdio: 'pipe', timeout: 15000 });
+    return { ok: true, method: 'steam-url' };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 // ── Main ─────────────────────────────────────────────────────────────────
 function main() {
   const args = process.argv.slice(2);
@@ -203,7 +231,22 @@ function main() {
   // Make sure it's executable (AppImages must have the exec bit).
   try { fs.chmodSync(appImage, 0o755); } catch { /* best effort */ }
 
-  if (isSteamRunning()) {
+  const steamRunning = isSteamRunning();
+  const liveCapable = process.platform === 'linux' &&
+    (commandPath('steamos-add-to-steam') || commandPath('steam'));
+
+  // Steam running + we can talk to it (SteamOS/Linux): add live via steam://,
+  // which works even in Game Mode. No file write, so skip the vdf path entirely.
+  if (steamRunning && liveCapable && !dryRun) {
+    const r = addLive(appImage);
+    if (!r.ok) { console.error('✗ ' + r.error); process.exit(1); }
+    console.log(`✓ Added "${path.basename(appImage)}" to the running Steam client (${r.method}).`);
+    console.log('    It will appear in your Library shortly (Steam names it after the file —');
+    console.log('    rename it and add artwork in Steam, e.g. via Decky + SteamGridDB).');
+    process.exit(0);
+  }
+
+  if (steamRunning) {
     const msg = 'Steam is running. Fully exit Steam first (in Game Mode: hold the\n' +
       '  STEAM button → Power → Switch to Desktop, or on desktop right-click the\n' +
       '  tray icon → Exit), then run this again. Steam rewrites shortcuts on exit.';
