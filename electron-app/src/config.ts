@@ -32,6 +32,9 @@ export interface PublicConfig {
   baseUrl: string;
   username: string;
   hasPassword: boolean;
+  /** A password is stored but can't be decrypted (e.g. encrypted under a keyring
+   *  that's no longer available) — the user needs to re-enter it. */
+  passwordNeedsReentry: boolean;
   theme: string;
   view: string;
   pinnedPlatforms: number[];
@@ -63,12 +66,24 @@ function writeStored(config: StoredConfig): void {
   fs.writeFileSync(configPath(), JSON.stringify(config, null, 2), 'utf-8');
 }
 
+/** Decrypt the stored password, or null if there's none / it can't be decrypted. */
+function decryptStored(stored: StoredConfig): string | null {
+  if (!stored.passwordEncrypted) return null;
+  try {
+    return safeStorage.decryptString(Buffer.from(stored.passwordEncrypted, 'base64'));
+  } catch {
+    return null;
+  }
+}
+
 export function getPublicConfig(): PublicConfig {
   const stored = readStored();
+  const decrypted = decryptStored(stored);
   return {
     baseUrl: stored.baseUrl,
     username: stored.username,
-    hasPassword: stored.passwordEncrypted.length > 0,
+    hasPassword: Boolean(decrypted),
+    passwordNeedsReentry: stored.passwordEncrypted.length > 0 && decrypted === null,
     theme: stored.theme,
     view: stored.view === 'list' ? 'list' : 'grid',
     pinnedPlatforms: Array.isArray(stored.pinnedPlatforms) ? stored.pinnedPlatforms : [],
@@ -80,20 +95,12 @@ export function getPublicConfig(): PublicConfig {
 
 export function getCredentials(): { baseUrl: string; username: string; password: string } {
   const stored = readStored();
-  let password = '';
-  if (stored.passwordEncrypted) {
-    try {
-      password = safeStorage.decryptString(Buffer.from(stored.passwordEncrypted, 'base64'));
-    } catch {
-      password = '';
-    }
-  }
-  return { baseUrl: stored.baseUrl, username: stored.username, password };
+  return { baseUrl: stored.baseUrl, username: stored.username, password: decryptStored(stored) ?? '' };
 }
 
 export function isConfigured(): boolean {
   const stored = readStored();
-  return Boolean(stored.baseUrl && stored.username && stored.passwordEncrypted);
+  return Boolean(stored.baseUrl && stored.username && decryptStored(stored));
 }
 
 export function setConfig(update: {

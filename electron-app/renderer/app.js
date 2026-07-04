@@ -1113,8 +1113,15 @@ async function openSettings() {
   $('cfg-url').value = cfg.baseUrl;
   $('cfg-username').value = cfg.username;
   $('cfg-password').value = '';
-  $('cfg-password').placeholder = cfg.hasPassword ? '(unchanged)' : '';
-  $('cfg-test-result').textContent = '';
+  if (cfg.passwordNeedsReentry) {
+    $('cfg-password').placeholder = 'Re-enter your password';
+    $('cfg-test-result').className = 'small error';
+    $('cfg-test-result').textContent = 'Your saved password couldn’t be read on this device — please re-enter it and Save.';
+  } else {
+    $('cfg-password').placeholder = cfg.hasPassword ? '(unchanged)' : '';
+    $('cfg-test-result').className = 'small';
+    $('cfg-test-result').textContent = '';
+  }
   // "Add R2SD to Steam" only makes sense when a Steam install is found.
   window.r2sd.steamStatus().then((s) => { $('btn-add-self-steam').hidden = !s.found; });
   $('settings-modal').hidden = false;
@@ -1270,6 +1277,7 @@ $('btn-clear-cache').addEventListener('click', async () => {
   $('cfg-test-result').className = 'small success';
   $('cfg-test-result').textContent = 'Cache cleared.';
 });
+$('btn-quit').addEventListener('click', () => { window.r2sd.quitApp(); });
 $('btn-add-self-steam').addEventListener('click', async () => {
   const btn = $('btn-add-self-steam');
   const out = $('cfg-test-result');
