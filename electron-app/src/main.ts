@@ -9,18 +9,6 @@ import * as downloads from './downloads';
 import * as shortcuts from './shortcuts';
 import * as steam from './steam';
 
-// safeStorage backend (credential encryption). On the Steam Deck the OS keyring
-// (kwallet/libsecret) is NOT running in Game Mode and isn't reliably available
-// across a Desktop<->Game Mode switch. A password encrypted with it (safeStorage
-// "v11") then fails to decrypt in another session, and the app was silently
-// sending an EMPTY password → RomM 403 ("failed to load games"). Forcing the
-// portable "basic" backend (v10, a fixed key) makes encrypt/decrypt deterministic
-// everywhere; it's no less secure than the Python app's plaintext storage, and
-// appropriate for a LAN homelab client. Must be set before app "ready".
-if (process.platform === 'linux') {
-  app.commandLine.appendSwitch('password-store', 'basic');
-}
-
 // Steam Deck / Linux rendering. The black window on SteamOS/Plasma was caused
 // by two flags that were originally added as "safe" defaults but actively broke
 // rendering: --no-sandbox (breaks the GPU buffer path — the namespace sandbox

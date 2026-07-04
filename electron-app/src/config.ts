@@ -66,11 +66,48 @@ function writeStored(config: StoredConfig): void {
   fs.writeFileSync(configPath(), JSON.stringify(config, null, 2), 'utf-8');
 }
 
-/** Decrypt the stored password, or null if there's none / it can't be decrypted. */
+// ── Password storage ─────────────────────────────────────────────────────
+//
+// safeStorage (OS keyring) is genuinely secure on Windows (DPAPI) and macOS
+// (Keychain), so we use it there. But on the Steam Deck the Linux keyring
+// (kwallet/libsecret) isn't running in Game Mode and varies across a
+// Desktop<->Game Mode switch — a value encrypted in one session silently fails
+// to decrypt in another, which surfaced as RomM 403s ("failed to load games").
+// So on Linux we DON'T touch the keyring: we store the password with a
+// mode-independent local obfuscation. This is plaintext-equivalent security
+// (the key is in the source), matching the Python app's plaintext storage —
+// an acceptable trade for a LAN homelab client that MUST work in Game Mode.
+//
+// Stored format is scheme-prefixed: "ss:" = safeStorage, "ob:" = obfuscated.
+// A legacy value with no prefix is an old raw-safeStorage blob (tried best-effort).
+
+const OBFUSCATION_KEY = 'R2SD/local-obfuscation-not-real-encryption/v1';
+
+function xorCode(buf: Buffer): Buffer {
+  for (let i = 0; i < buf.length; i++) buf[i] ^= OBFUSCATION_KEY.charCodeAt(i % OBFUSCATION_KEY.length) & 0xff;
+  return buf;
+}
+
+function useKeyring(): boolean {
+  // Only trust the OS keyring where it's reliable across sessions.
+  if (process.platform === 'linux') return false;
+  try { return safeStorage.isEncryptionAvailable(); } catch { return false; }
+}
+
+function encodePassword(password: string): string {
+  if (useKeyring()) return 'ss:' + safeStorage.encryptString(password).toString('base64');
+  return 'ob:' + xorCode(Buffer.from(password, 'utf8')).toString('base64');
+}
+
+/** Decode the stored password, or null if there's none / it can't be decoded. */
 function decryptStored(stored: StoredConfig): string | null {
-  if (!stored.passwordEncrypted) return null;
+  const blob = stored.passwordEncrypted;
+  if (!blob) return null;
   try {
-    return safeStorage.decryptString(Buffer.from(stored.passwordEncrypted, 'base64'));
+    if (blob.startsWith('ob:')) return xorCode(Buffer.from(blob.slice(3), 'base64')).toString('utf8');
+    if (blob.startsWith('ss:')) return safeStorage.decryptString(Buffer.from(blob.slice(3), 'base64'));
+    // Legacy: raw base64 of a safeStorage blob (may be undecodable here → re-entry).
+    return safeStorage.decryptString(Buffer.from(blob, 'base64'));
   } catch {
     return null;
   }
@@ -133,7 +170,7 @@ export function setConfig(update: {
   }
   // Only touch the password when a new one is provided (empty string keeps the old one)
   if (update.password) {
-    stored.passwordEncrypted = safeStorage.encryptString(update.password).toString('base64');
+    stored.passwordEncrypted = encodePassword(update.password);
   }
   writeStored(stored);
   return getPublicConfig();
