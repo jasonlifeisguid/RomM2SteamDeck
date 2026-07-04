@@ -8,14 +8,15 @@ import * as downloads from './downloads';
 import * as shortcuts from './shortcuts';
 import * as steam from './steam';
 
-// Steam Deck / Linux rendering. Electron's GPU process crashed on launch
-// against the Deck's stack; the safe baseline is disabling the GPU sandbox
-// (the likely culprit) while leaving the GL backend at its only allowed value
-// (egl-angle / default). --no-sandbox is required from an AppImage's read-only
-// mount; --disable-dev-shm-usage avoids shared-memory limits under Game Mode's
-// gamescope sandbox. Rendering can be tuned per-device via env vars without a
-// rebuild (R2SD_GL / R2SD_ANGLE / R2SD_OZONE), which is how the working combo
-// was found on real hardware. No-ops on Windows/macOS.
+// Steam Deck / Linux rendering. The black window on SteamOS/Plasma was caused
+// by two flags that were originally added as "safe" defaults but actively broke
+// rendering: --no-sandbox (breaks the GPU buffer path — the namespace sandbox
+// works fine on SteamOS) and --disable-dev-shm-usage (forces Chromium's shm onto
+// /tmp where creation fails in a 57k-error flood; the default /dev/shm is a 15G
+// tmpfs that works). The only remaining default is --disable-gpu-sandbox, a
+// harmless stability hedge; verified rendering the full UI on SteamOS. Rendering
+// can still be tuned per-device via env vars without a rebuild
+// (R2SD_GL / R2SD_ANGLE / R2SD_OZONE / R2SD_FLAGS). No-ops on Windows/macOS.
 if (process.platform === 'linux') {
   // Full override for device tuning/diagnostics: R2SD_FLAGS is a space-separated
   // list of Chromium switches ("--no-sandbox --use-gl=angle"); an empty string
