@@ -392,10 +392,10 @@ function updateCardActions(romId) {
 }
 
 /** Queue a download from a tile/menu using the platform's default install path. */
-function quickDownload(rom) {
+function startDownloadWith(rom, installPath) {
   window.r2sd.startDownload(
     { id: rom.id, name: rom.name || rom.fs_name, fsName: rom.fs_name, platformId: rom.platform_id, size: rom.fs_size_bytes || 0 },
-    ''
+    installPath || ''
   );
   // Optimistic: reflect queued state until the queue:update event lands
   if (!queueStatusFor(rom.id)) {
@@ -405,6 +405,35 @@ function quickDownload(rom) {
   updateCardActions(rom.id);
   renderQueueBar();
 }
+
+function quickDownload(rom) {
+  const setup = platformSetup(rom.platform_id);
+  const paths = (setup.autoExtract && Array.isArray(setup.installPaths)) ? setup.installPaths : [];
+  // More than one install path → ask which one (buttons, not a native <select>,
+  // which is finicky under gamescope).
+  if (paths.length > 1) { openInstallPathPicker(rom, paths); return; }
+  startDownloadWith(rom, '');
+}
+
+let installPathRom = null;
+function openInstallPathPicker(rom, paths) {
+  installPathRom = rom;
+  $('installpath-game').textContent = rom.name || rom.fs_name;
+  const list = $('installpath-list');
+  list.innerHTML = '';
+  paths.forEach((p) => {
+    const btn = document.createElement('button');
+    btn.className = 'exe-option installpath-option';
+    btn.textContent = p;
+    btn.addEventListener('click', () => {
+      $('installpath-modal').hidden = true;
+      startDownloadWith(rom, p);
+    });
+    list.appendChild(btn);
+  });
+  $('installpath-modal').hidden = false;
+}
+function closeInstallPathPicker() { $('installpath-modal').hidden = true; installPathRom = null; }
 
 // ── Right-click context menu ────────────────────────────
 
@@ -1301,6 +1330,9 @@ $('btn-refresh').addEventListener('click', () => {
   if (state.currentPlatformId !== null) selectPlatform(state.currentPlatformId, true);
   loadPlatforms(true);
 });
+// Header Exit — shown on Linux, where Game Mode has no window chrome to close.
+$('btn-exit').addEventListener('click', () => window.r2sd.quitApp());
+window.r2sd.getPlatform().then((p) => { if (p === 'linux') $('btn-exit').hidden = false; });
 $('search').addEventListener('input', (e) => {
   state.search = e.target.value;
   renderGrid();
@@ -1347,6 +1379,8 @@ $('btn-dl-delete').addEventListener('click', () => state.detailRom && deleteDown
 $('btn-shortcut').addEventListener('click', () => state.detailRom && openExePicker(state.detailRom));
 $('exe-cancel').addEventListener('click', closeExePicker);
 $('exe-backdrop').addEventListener('click', closeExePicker);
+$('installpath-cancel').addEventListener('click', closeInstallPathPicker);
+$('installpath-backdrop').addEventListener('click', closeInstallPathPicker);
 $('exe-shortcut').addEventListener('click', createShortcut);
 $('exe-steam').addEventListener('click', addToSteam);
 $('exe-play').addEventListener('click', playFromPicker);
@@ -1373,6 +1407,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     $('theme-modal').hidden = true;
     closeExePicker();
+    closeInstallPathPicker();
     closeDetail();
     closeSettings();
     closePlatformsModal();

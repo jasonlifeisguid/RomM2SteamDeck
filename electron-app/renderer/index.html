@@ -44,6 +44,7 @@
           <button id="btn-sortdir" class="icon-btn" title="Sort direction">&#9650;</button>
           <button id="btn-view" class="icon-btn" title="Toggle list / grid view">&#9636;</button>
           <button id="btn-refresh" class="icon-btn" title="Refresh from server">&#8635;</button>
+          <button id="btn-exit" class="icon-btn" title="Exit RomM2SteamDeck" hidden><svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v8"/><path d="M7.5 7.5a7 7 0 1 0 9 0"/></svg></button>
         </div>
       </header>
       <div id="grid-status" class="muted pad" hidden></div>
@@ -146,6 +147,20 @@
         <button id="exe-shortcut" class="secondary" disabled>Desktop Shortcut</button>
         <button id="exe-play" class="secondary" disabled>&#9654; Play</button>
         <button id="exe-steam" class="primary" disabled hidden>Add to Steam</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Install-path picker (shown on download when a platform has multiple paths) -->
+  <div id="installpath-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="installpath-backdrop"></div>
+    <div class="modal-card exe-card">
+      <h2>Choose install location</h2>
+      <p class="small muted mb-10" id="installpath-game"></p>
+      <div id="installpath-list" class="exe-list"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="installpath-cancel" class="secondary">Cancel</button>
       </div>
     </div>
   </div>
