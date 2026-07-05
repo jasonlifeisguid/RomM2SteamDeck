@@ -31,16 +31,14 @@
         <h1 id="platform-title">Library</h1>
         <div class="toolbar-controls">
           <input id="search" type="search" placeholder="Search games&hellip;" autocomplete="off">
-          <select id="genre-filter" title="Filter by genre">
-            <option value="">All genres</option>
-          </select>
-          <select id="sort" title="Sort by">
-            <option value="name">Name</option>
-            <option value="added">Date Added</option>
-            <option value="size">Size</option>
-            <option value="year">Release Year</option>
-            <option value="rating">Rating</option>
-          </select>
+          <div id="genre-filter" class="dropdown" data-value="" title="Filter by genre">
+            <button type="button" class="dropdown-trigger"><span class="dropdown-label">All genres</span><span class="dropdown-caret">&#9662;</span></button>
+            <div class="dropdown-menu" hidden></div>
+          </div>
+          <div id="sort" class="dropdown" data-value="name" title="Sort by">
+            <button type="button" class="dropdown-trigger"><span class="dropdown-label">Name</span><span class="dropdown-caret">&#9662;</span></button>
+            <div class="dropdown-menu" hidden></div>
+          </div>
           <button id="btn-sortdir" class="icon-btn" title="Sort direction">&#9650;</button>
           <button id="btn-view" class="icon-btn" title="Toggle list / grid view">&#9636;</button>
           <button id="btn-refresh" class="icon-btn" title="Refresh from server">&#8635;</button>

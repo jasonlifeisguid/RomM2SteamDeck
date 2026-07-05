@@ -263,21 +263,69 @@ function visibleRoms() {
   return sorted;
 }
 
+// ── Custom dropdown ─────────────────────────────────────
+// Native <select> popups aren't composited by gamescope (Steam Deck Game Mode),
+// so they're flaky. This is an in-page replacement: a trigger button + a menu of
+// divs. Same idea as a <select>: .dataset.value holds the value, onChange fires
+// on pick. Options are {value, label}.
+function initDropdown(id, onChange) {
+  const el = $(id);
+  el._menu = el.querySelector('.dropdown-menu');
+  el._label = el.querySelector('.dropdown-label');
+  el._onChange = onChange;
+  el.querySelector('.dropdown-trigger').addEventListener('click', (e) => {
+    e.stopPropagation();
+    const wasOpen = el.classList.contains('open');
+    closeAllDropdowns();
+    if (!wasOpen) { el.classList.add('open'); el._menu.hidden = false; }
+  });
+}
+function setDropdownOptions(id, options, value) {
+  const el = $(id);
+  el._menu.innerHTML = '';
+  for (const o of options) {
+    const item = document.createElement('div');
+    item.className = 'dropdown-item';
+    item.dataset.value = o.value;
+    item.textContent = o.label;
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      closeAllDropdowns();
+      if (getDropdownValue(id) !== String(o.value)) {
+        setDropdownValue(id, o.value);
+        if (el._onChange) el._onChange(o.value);
+      }
+    });
+    el._menu.appendChild(item);
+  }
+  const has = options.some((o) => String(o.value) === String(value));
+  setDropdownValue(id, has ? value : (options[0] ? options[0].value : ''));
+}
+function setDropdownValue(id, value) {
+  const el = $(id);
+  el.dataset.value = String(value);
+  const items = [...el._menu.children];
+  const match = items.find((c) => c.dataset.value === String(value));
+  if (el._label) el._label.textContent = match ? match.textContent : '';
+  items.forEach((c) => c.classList.toggle('selected', c.dataset.value === String(value)));
+}
+function getDropdownValue(id) { return $(id).dataset.value; }
+function closeAllDropdowns() {
+  document.querySelectorAll('.dropdown.open').forEach((d) => {
+    d.classList.remove('open');
+    if (d._menu) d._menu.hidden = true;
+  });
+}
+document.addEventListener('click', closeAllDropdowns);
+
 function updateGenreFilter() {
-  const select = $('genre-filter');
+  const el = $('genre-filter');
   const genres = new Set();
   for (const rom of state.roms) for (const g of romGenres(rom)) genres.add(g);
-  const current = state.genre;
-  select.innerHTML = '<option value="">All genres</option>';
-  for (const g of [...genres].sort()) {
-    const opt = document.createElement('option');
-    opt.value = g;
-    opt.textContent = g;
-    select.appendChild(opt);
-  }
-  select.value = genres.has(current) ? current : '';
-  state.genre = select.value;
-  select.style.display = genres.size ? '' : 'none';
+  const options = [{ value: '', label: 'All genres' }, ...[...genres].sort().map((g) => ({ value: g, label: g }))];
+  setDropdownOptions('genre-filter', options, genres.has(state.genre) ? state.genre : '');
+  state.genre = getDropdownValue('genre-filter');
+  el.style.display = genres.size ? '' : 'none';
 }
 
 const coverObserver = new IntersectionObserver(
@@ -1353,20 +1401,27 @@ function updateSortDirButton() {
   btn.title = state.sortDir === 'asc' ? 'Ascending (click for descending)' : 'Descending (click for ascending)';
 }
 
-$('sort').addEventListener('change', (e) => {
-  state.sort = e.target.value;
+initDropdown('sort', (value) => {
+  state.sort = value;
   state.sortDir = SORT_DEFAULT_DIR[state.sort] || 'asc';
   updateSortDirButton();
   renderGrid();
 });
+setDropdownOptions('sort', [
+  { value: 'name', label: 'Name' },
+  { value: 'added', label: 'Date Added' },
+  { value: 'size', label: 'Size' },
+  { value: 'year', label: 'Release Year' },
+  { value: 'rating', label: 'Rating' },
+], state.sort);
 $('btn-sortdir').addEventListener('click', () => {
   state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
   updateSortDirButton();
   renderGrid();
 });
 updateSortDirButton();
-$('genre-filter').addEventListener('change', (e) => {
-  state.genre = e.target.value;
+initDropdown('genre-filter', (value) => {
+  state.genre = value;
   renderGrid();
 });
 $('btn-view').addEventListener('click', async () => {
@@ -1413,6 +1468,7 @@ $('pf-staging-browse').addEventListener('click', async () => {
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     $('theme-modal').hidden = true;
+    closeAllDropdowns();
     closeExePicker();
     closeInstallPathPicker();
     closeDetail();
