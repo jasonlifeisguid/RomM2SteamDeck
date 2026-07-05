@@ -124,10 +124,13 @@ function buildShortcutEntry(exePath, appName, iconPath) {
     StartDir: dir.endsWith(path.sep) ? dir : dir + path.sep,
     icon: iconPath || '',
     ShortcutPath: '',
-    LaunchOptions: '',
+    // Strip the Steam Overlay: it races Electron's startup fork under gamescope,
+    // slowing/deadlocking Game Mode. The AllowOverlay flag alone doesn't stop the
+    // LD_PRELOAD for a non-Steam game; clearing LD_PRELOAD in launch options does.
+    LaunchOptions: 'env LD_PRELOAD= %command%',
     IsHidden: 0,
     AllowDesktopConfig: 1,
-    AllowOverlay: 0, // overlay races Electron's startup fork → Game Mode deadlock
+    AllowOverlay: 0,
     OpenVR: 0,
     Devkit: 0,
     DevkitGameID: '',

@@ -163,11 +163,19 @@ export interface AddResult {
   method?: 'file' | 'steamos-add-to-steam' | 'steam-url';
 }
 
-export function buildShortcutEntry(exePath: string, appName: string, startDir?: string, tags: string[] = []): VdfMap {
+// Clears the Steam Overlay's LD_PRELOAD for one shortcut. The overlay
+// (gameoverlayrenderer.so) injects threads before Electron starts and Electron's
+// startup fork() races them — intermittently deadlocking / adding a ~45s delay
+// under gamescope. Setting AllowOverlay=0 alone does NOT stop the preload for a
+// non-Steam game; stripping LD_PRELOAD via launch options does. Verified on real
+// hardware. Only applied to R2SD (an Electron app), never to game shortcuts.
+export const OVERLAY_STRIP_LAUNCH_OPTS = 'env LD_PRELOAD= %command%';
+
+export function buildShortcutEntry(exePath: string, appName: string, opts: { startDir?: string; tags?: string[]; overlayOff?: boolean } = {}): VdfMap {
   const quotedExe = `"${exePath}"`;
-  const dir = startDir || path.dirname(exePath);
+  const dir = opts.startDir || path.dirname(exePath);
   const tagMap: VdfMap = {};
-  tags.forEach((t, i) => { tagMap[String(i)] = t; });
+  (opts.tags || []).forEach((t, i) => { tagMap[String(i)] = t; });
   // Field order mirrors what Steam itself writes (see a real entry).
   return {
     appid: shortcutAppId(quotedExe, appName),
@@ -176,14 +184,10 @@ export function buildShortcutEntry(exePath: string, appName: string, startDir?: 
     StartDir: dir.endsWith(path.sep) ? dir : dir + path.sep,
     icon: '',
     ShortcutPath: '',
-    LaunchOptions: '',
+    LaunchOptions: opts.overlayOff ? OVERLAY_STRIP_LAUNCH_OPTS : '',
     IsHidden: 0,
     AllowDesktopConfig: 1,
-    // Overlay OFF: gameoverlayrenderer.so injects threads before Electron starts,
-    // and Electron's startup fork() then races those threads — intermittently
-    // deadlocking the launch (and the exit) under gamescope/Game Mode. Disabling
-    // the overlay for this shortcut removes the injection and the race.
-    AllowOverlay: 0,
+    AllowOverlay: opts.overlayOff ? 0 : 1,
     OpenVR: 0,
     Devkit: 0,
     DevkitGameID: '',
@@ -227,10 +231,13 @@ export function addNonSteamGame(exePath: string, appName: string, opts: { startD
 
     const shortcuts = (root.shortcuts as VdfMap) || (root.shortcuts = {} as VdfMap);
     const quotedExe = `"${exePath}"`;
+    const isR2SD = /RomM2SteamDeck[^"]*\.AppImage/i.test(exePath);
 
-    // Force the Steam Overlay OFF on every existing R2SD shortcut (it races
-    // Electron's startup fork and intermittently deadlocks Game Mode). This also
-    // repairs duplicate/older entries added earlier via the live path.
+    // Repair every existing R2SD (Electron) shortcut: overlay off AND LD_PRELOAD
+    // stripped via launch options (the flag alone doesn't stop the preload). This
+    // races Electron's startup fork and slows/deadlocks Game Mode. Also fixes
+    // duplicate/older entries added earlier via the live path. Game shortcuts are
+    // left alone (they want their overlay).
     let exactExists = false;
     let changed = false;
     for (const entry of Object.values(shortcuts)) {
@@ -238,9 +245,10 @@ export function addNonSteamGame(exePath: string, appName: string, opts: { startD
       const e = entry as VdfMap;
       const exe = typeof e.Exe === 'string' ? e.Exe : '';
       if (e.Exe === quotedExe) exactExists = true;
-      if ((e.Exe === quotedExe || /RomM2SteamDeck[^"]*\.AppImage/i.test(exe)) && e.AllowOverlay !== 0) {
-        e.AllowOverlay = 0;
-        changed = true;
+      const isR2SDEntry = e.Exe === quotedExe ? isR2SD : /RomM2SteamDeck[^"]*\.AppImage/i.test(exe);
+      if (isR2SDEntry) {
+        if (e.AllowOverlay !== 0) { e.AllowOverlay = 0; changed = true; }
+        if (e.LaunchOptions !== OVERLAY_STRIP_LAUNCH_OPTS) { e.LaunchOptions = OVERLAY_STRIP_LAUNCH_OPTS; changed = true; }
       }
     }
 
@@ -260,7 +268,7 @@ export function addNonSteamGame(exePath: string, appName: string, opts: { startD
     let appId = 0;
     if (!exactExists) {
       const nextIndex = Object.keys(shortcuts).length;
-      const entry = buildShortcutEntry(exePath, appName, opts.startDir, opts.tags);
+      const entry = buildShortcutEntry(exePath, appName, { startDir: opts.startDir, tags: opts.tags, overlayOff: isR2SD });
       shortcuts[String(nextIndex)] = entry;
       appId = entry.appid as number;
     }
