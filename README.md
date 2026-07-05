@@ -59,13 +59,23 @@ Your password is stored locally — encrypted via the OS keychain on Windows/mac
 RomM2SteamDeck runs great in Game Mode, and can add itself to your Steam library:
 
 1. In **Desktop Mode**, run the AppImage and configure RomM (above).
-2. **Fully exit Steam** (right-click the tray icon → Exit).
-3. In the app, open **Settings → Add R2SD to Steam**.
-4. Reopen Steam / switch to **Game Mode** — RomM2SteamDeck is now in your library under *Non-Steam*.
+2. Open **Settings → Add R2SD to Steam** (works whether Steam is open or closed).
+3. **Important — apply the overlay fix** (see below).
+4. Switch to **Game Mode** — RomM2SteamDeck is in your library under *Non-Steam*.
 
-Adding it this way (with Steam closed) automatically **disables the Steam Overlay for this shortcut**, which is required: the overlay conflicts with Electron's startup and otherwise makes the app hang or take ~45s to appear in Game Mode. If you add it while Steam is running, do the Desktop-Mode step once afterward to apply the fix.
+### The Steam Overlay fix (required for Game Mode)
 
-In Game Mode you can exit the app with the **power button** in the top-right of the toolbar (or Settings → Quit). Rename it and add artwork in Steam as usual (e.g. via Decky + SteamGridDB).
+The Steam Overlay conflicts with Electron's startup: with it enabled, the app either hangs or takes ~45 seconds to appear in Game Mode. The fix is to stop Steam from injecting the overlay into this one shortcut, by setting its **Launch Options**:
+
+1. In Steam, select **RomM2SteamDeck** → **Properties** (the ⚙ gear).
+2. In **Launch Options**, enter exactly:
+   ```
+   env LD_PRELOAD= %command%
+   ```
+
+Set it here in the Properties field — that's the reliable way, because Steam owns the setting and syncs it across your devices. (The app also tries to apply this automatically when you add the shortcut with Steam closed, but Steam can revert direct edits to its `shortcuts.vdf` — especially if you use the same account on more than one device via Steam Cloud — so the Properties field is the sure fix.)
+
+Once set, the app launches quickly and exits cleanly. Exit it in Game Mode with the **power button** in the top-right of the toolbar (or **Settings → Quit**). Rename it and add artwork in Steam as usual (e.g. via Decky + SteamGridDB).
 
 ---
 

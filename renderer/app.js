@@ -1325,10 +1325,13 @@ $('btn-add-self-steam').addEventListener('click', async () => {
     return;
   }
   out.className = 'small success';
-  if (res.repaired) out.textContent = 'Fixed the R2SD Steam shortcut (disabled the overlay). Restart Steam / relaunch in Game Mode.';
-  else if (res.alreadyPresent) out.textContent = 'RomM2SteamDeck is already in your Steam library (overlay off).';
-  else if (res.live) out.textContent = 'Added to Steam — it will appear shortly. NOTE: to disable the overlay (recommended for Game Mode), run this again from Desktop Mode with Steam closed.';
-  else out.textContent = 'Added to Steam (overlay off) — restart Steam to see it.';
+  // The reliable Game Mode overlay fix is the Launch Option set via Steam's UI —
+  // Steam reverts direct shortcuts.vdf edits (especially with Cloud/multi-device).
+  const tip = ' For Game Mode: in Steam → Properties → Launch Options set  env LD_PRELOAD= %command%';
+  if (res.repaired) out.textContent = 'Updated the R2SD Steam shortcut.' + tip;
+  else if (res.alreadyPresent) out.textContent = 'RomM2SteamDeck is already in your Steam library.' + tip;
+  else if (res.live) out.textContent = 'Added to Steam — it will appear shortly.' + tip;
+  else out.textContent = 'Added to Steam — restart Steam to see it.' + tip;
 });
 $('btn-refresh').addEventListener('click', () => {
   if (state.currentPlatformId !== null) selectPlatform(state.currentPlatformId, true);
