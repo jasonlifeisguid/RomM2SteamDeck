@@ -259,7 +259,15 @@ function registerIpc(): void {
 
   ipcMain.handle('download:cancel', (_e, romId: number) => downloads.cancelDownload(romId));
 
-  ipcMain.handle('download:delete', (_e, romId: number) => downloads.deleteDownload(romId));
+  ipcMain.handle('download:delete', (_e, romId: number) => {
+    // Capture the install folder before the record is removed, so we can also
+    // clean up any Steam shortcut that pointed into it.
+    const rec = downloads.listDownloads().find((r) => r.romId === romId);
+    const result = downloads.deleteDownload(romId);
+    if (result.error || !rec || !rec.filePath) return result;
+    const steamRes = steam.removeNonSteamGamesUnder(rec.filePath);
+    return { ...result, steamRemoved: steamRes.removed, steamSkipped: !!steamRes.skippedSteamRunning };
+  });
 
   // Host OS (renderer gates the Steam Deck tip on this)
   ipcMain.handle('app:platform', () => process.platform);

@@ -720,6 +720,10 @@ async function deleteDownloadFor(rom) {
   const result = await window.r2sd.deleteDownload(rom.id);
   if (result.error) {
     toast(result.error, 'error');
+  } else if (result.steamRemoved && result.steamRemoved.length) {
+    toast(`Deleted ${rom.name || rom.fs_name} (and removed from Steam)`, 'success');
+  } else if (result.steamSkipped) {
+    toast(`Deleted ${rom.name || rom.fs_name} — its Steam shortcut was left (close Steam to remove it)`, 'success');
   } else {
     toast(`Deleted ${rom.name || rom.fs_name}`, 'success');
   }

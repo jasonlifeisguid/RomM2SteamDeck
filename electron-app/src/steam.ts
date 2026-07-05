@@ -375,3 +375,72 @@ export function addNonSteamGameSmart(exePath: string, appName: string, opts: { s
   }
   return addNonSteamGame(exePath, appName, opts);
 }
+
+// ── Remove non-Steam games (cleanup when a downloaded game is deleted) ────
+
+export interface RemoveResult {
+  ok: boolean;
+  error?: string;
+  removed: string[];        // AppNames of shortcuts removed
+  skippedSteamRunning?: boolean; // matching shortcut(s) left because Steam is open
+}
+
+function isInsideFolder(parent: string, child: string): boolean {
+  const rel = path.relative(parent, child);
+  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+}
+
+/**
+ * Remove any non-Steam shortcut whose target executable lives inside `folder`
+ * (i.e. the game we just deleted from disk). Requires Steam closed — like adding,
+ * a write while Steam runs would be clobbered on exit. When Steam is running we
+ * do a read-only check and report whether a stale shortcut was left behind.
+ * Byte-safe (round-trip gate), backs up, re-indexes remaining shortcuts.
+ */
+export function removeNonSteamGamesUnder(folder: string): RemoveResult {
+  if (!folder) return { ok: true, removed: [] };
+  const users = findSteamUsers();
+  if (!users.length) return { ok: true, removed: [] };
+  const target = users[0];
+  if (!fs.existsSync(target.shortcutsPath)) return { ok: true, removed: [] };
+
+  try {
+    const original = fs.readFileSync(target.shortcutsPath);
+    const root = parseVdf(original);
+    if (!serializeVdf(root).equals(original)) {
+      return { ok: false, error: 'Aborted for safety: could not reproduce shortcuts.vdf byte-for-byte.', removed: [] };
+    }
+    const shortcuts = (root.shortcuts as VdfMap) || {};
+    const folderNorm = path.resolve(folder);
+
+    const kept: VdfMap[] = [];
+    const matched: string[] = [];
+    for (const entry of Object.values(shortcuts)) {
+      if (!entry || typeof entry !== 'object') { continue; }
+      const e = entry as VdfMap;
+      const exe = typeof e.Exe === 'string' ? e.Exe.replace(/^"|"$/g, '') : '';
+      if (exe && isInsideFolder(folderNorm, path.resolve(exe))) {
+        matched.push(String(e.AppName || exe));
+      } else {
+        kept.push(e);
+      }
+    }
+
+    if (!matched.length) return { ok: true, removed: [] };
+    // Found matching shortcut(s) but can't safely write while Steam is open.
+    if (isSteamRunning()) return { ok: true, removed: [], skippedSteamRunning: true };
+
+    // Re-index the survivors 0..n-1 (Steam expects sequential numeric keys).
+    const newShortcuts: VdfMap = {};
+    kept.forEach((e, i) => { newShortcuts[String(i)] = e; });
+    root.shortcuts = newShortcuts;
+
+    fs.writeFileSync(`${target.shortcutsPath}.bak-${Date.now()}`, original);
+    const tmp = `${target.shortcutsPath}.tmp`;
+    fs.writeFileSync(tmp, serializeVdf(root));
+    fs.renameSync(tmp, target.shortcutsPath);
+    return { ok: true, removed: matched };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err), removed: [] };
+  }
+}
