@@ -916,6 +916,8 @@ async function openExePicker(rom) {
   const [platform, steam] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.steamStatus()]);
   $('exe-steam').hidden = !steam.found;
   $('exe-steamdeck-tip').hidden = !(platform === 'linux' && !steam.found);
+  // On Linux these are Windows .exe games — they need a Proton compatibility tool.
+  $('exe-proton-tip').hidden = platform !== 'linux';
   $('exe-modal').hidden = false;
 
   const exes = await window.r2sd.listExes(rom.id);

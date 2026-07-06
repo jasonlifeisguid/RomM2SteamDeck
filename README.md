@@ -87,6 +87,19 @@ For Windows games (and any extracted game), open a downloaded game's **Add to St
 - On SteamOS with Steam running, it uses Valve's own `steam://addnonsteamgame` path so it works without closing Steam.
 - Deleting a game from within the app also removes its Steam shortcut (when Steam is closed).
 
+### Running Windows games on Steam Deck / Linux (Proton)
+
+A Windows `.exe` added to Steam needs a Proton compatibility tool to run on Linux. Set it in Steam (this is a Steam setting, so the app can't do it for you reliably — Steam owns and cloud-syncs it):
+
+1. Select the game in Steam → **Properties → Compatibility**.
+2. Check **Force the use of a specific Steam Play compatibility tool**.
+3. Choose **Proton Experimental** (a good general default; you can switch to a specific Proton version later if a game needs it).
+
+A couple of quirks to expect on SteamOS:
+
+- **You may need to launch the game two or three times the first time.** It often fails on the first launch; on the next, Steam shows "downloading content" — that's it fetching the Proton runtime. This is usually a one-time setup per Proton version, so once it's done, subsequent launches work normally.
+- **The compatibility-tool dropdown can snap back.** When you pick Proton Experimental it sometimes reverts the selection to "Steam Linux Runtime" — just select **Proton Experimental** again so it sticks. This happens per title.
+
 ---
 
 ## Features
