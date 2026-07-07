@@ -8,6 +8,7 @@ import * as cache from './cache';
 import * as downloads from './downloads';
 import * as shortcuts from './shortcuts';
 import * as steam from './steam';
+import * as steamclient from './steamclient';
 
 // Steam Deck / Linux rendering. The black window on SteamOS/Plasma was caused
 // by two flags that were originally added as "safe" defaults but actively broke
@@ -67,6 +68,33 @@ function selfLauncherPath(): string | null {
     return m ? m[1] : null;
   }
   return null;
+}
+
+/** A freshly-added shortcut takes a moment to land in shortcuts.vdf (Steam
+ *  persists after a live add), so poll briefly for its appid. */
+async function pollShortcutAppId(exePath: string): Promise<number | null> {
+  for (let i = 0; i < 12; i++) {
+    const id = steam.readShortcutAppId(exePath);
+    if (id !== null) return id;
+    await new Promise((r) => setTimeout(r, 600));
+  }
+  return null;
+}
+
+/** Set a shortcut's Launch Options live via SteamClient. Returns false (caller
+ *  falls back to the manual tip) if the CEF debugger isn't available or the
+ *  shortcut isn't found. */
+async function applyLaunchOptionLive(exePath: string, opts: string): Promise<boolean> {
+  const appId = await pollShortcutAppId(exePath);
+  if (appId === null) return false;
+  return (await steamclient.setLaunchOptions(appId, opts)).ok;
+}
+
+/** Force a Steam Play compat tool live via SteamClient. */
+async function applyCompatToolLive(exePath: string, tool: string): Promise<boolean> {
+  const appId = await pollShortcutAppId(exePath);
+  if (appId === null) return false;
+  return (await steamclient.specifyCompatTool(appId, tool)).ok;
 }
 
 /** One-time untangle of the shared %APPDATA%\romm2steamdeck directory. */
@@ -308,16 +336,28 @@ function registerIpc(): void {
     users: steam.findSteamUsers().length,
     canAddLive: steam.canAddLive(),
   }));
-  ipcMain.handle('steam:add', (_e, exePath: string, appName: string) =>
-    steam.addNonSteamGameSmart(exePath, appName, { tags: ['RomM'] })
-  );
+  ipcMain.handle('steam:add', async (_e, exePath: string, appName: string, proton?: boolean) => {
+    const res = steam.addNonSteamGameSmart(exePath, appName, { tags: ['RomM'] });
+    // Windows game + Proton requested: force the compat tool LIVE via SteamClient
+    // (Decky/CEF). Falls back to the manual Compatibility tip when unavailable.
+    if (res.ok && proton && process.platform === 'linux') {
+      return { ...res, protonLive: await applyCompatToolLive(exePath, 'proton_experimental') };
+    }
+    return res;
+  });
   // Add R2SD *itself* to Steam (Settings button). Uses the same hybrid path.
-  ipcMain.handle('steam:addSelf', () => {
+  ipcMain.handle('steam:addSelf', async () => {
     const self = selfLauncherPath();
     if (!self) {
       return { ok: false, error: 'This works from the packaged app (installed .exe / AppImage / .app), not a dev run.' };
     }
-    return steam.addNonSteamGameSmart(self, 'RomM2SteamDeck', { tags: ['RomM'] });
+    const res = steam.addNonSteamGameSmart(self, 'RomM2SteamDeck', { tags: ['RomM'] });
+    // Apply the overlay-strip Launch Option LIVE via SteamClient so it sticks
+    // even in Game Mode / across Cloud (no restart, no revert). Best-effort.
+    if (res.ok && process.platform === 'linux') {
+      return { ...res, launchOptionLive: await applyLaunchOptionLive(self, steam.OVERLAY_STRIP_LAUNCH_OPTS) };
+    }
+    return res;
   });
 
   ipcMain.handle('downloads:sync', (_e, platformId: number) => {

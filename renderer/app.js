@@ -1375,8 +1375,13 @@ $('btn-add-self-steam').addEventListener('click', async () => {
     return;
   }
   out.className = 'small success';
-  // The reliable Game Mode overlay fix is the Launch Option set via Steam's UI —
-  // Steam reverts direct shortcuts.vdf edits (especially with Cloud/multi-device).
+  // Best case: the Game Mode overlay fix was applied live via SteamClient (Decky/CEF).
+  if (res.launchOptionLive) {
+    out.textContent = 'Added to Steam and applied the Game Mode fix automatically — launch it any time.';
+    return;
+  }
+  // Otherwise, point to the manual Launch Option (the reliable route when the
+  // SteamClient bridge isn't available — Steam reverts direct file edits).
   const tip = ' For Game Mode: in Steam → Properties → Launch Options set  env LD_PRELOAD= %command%';
   if (res.repaired) out.textContent = 'Updated the R2SD Steam shortcut.' + tip;
   else if (res.alreadyPresent) out.textContent = 'RomM2SteamDeck is already in your Steam library.' + tip;

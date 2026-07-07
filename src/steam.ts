@@ -391,6 +391,30 @@ function isInsideFolder(parent: string, child: string): boolean {
 }
 
 /**
+ * The unsigned 32-bit appid Steam uses for the shortcut whose Exe is `exePath`,
+ * read from shortcuts.vdf. This is the id the SteamClient.Apps.* methods expect.
+ * We READ it rather than compute it because Valve's steamos-add-to-steam uses a
+ * different appid algorithm than our shortcutAppId(). Returns null if not found.
+ */
+export function readShortcutAppId(exePath: string): number | null {
+  const quoted = `"${exePath}"`;
+  for (const u of findSteamUsers()) {
+    if (!fs.existsSync(u.shortcutsPath)) continue;
+    try {
+      const root = parseVdf(fs.readFileSync(u.shortcutsPath));
+      const shortcuts = (root.shortcuts as VdfMap) || {};
+      for (const entry of Object.values(shortcuts)) {
+        if (entry && typeof entry === 'object') {
+          const e = entry as VdfMap;
+          if (e.Exe === quoted && typeof e.appid === 'number') return e.appid >>> 0;
+        }
+      }
+    } catch { /* unreadable — try next user */ }
+  }
+  return null;
+}
+
+/**
  * Remove any non-Steam shortcut whose target executable lives inside `folder`
  * (i.e. the game we just deleted from disk). Requires Steam closed — like adding,
  * a write while Steam runs would be clobbered on exit. When Steam is running we
