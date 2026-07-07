@@ -916,8 +916,11 @@ async function openExePicker(rom) {
   const [platform, steam] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.steamStatus()]);
   $('exe-steam').hidden = !steam.found;
   $('exe-steamdeck-tip').hidden = !(platform === 'linux' && !steam.found);
-  // On Linux these are Windows .exe games — they need a Proton compatibility tool.
-  $('exe-proton-tip').hidden = platform !== 'linux';
+  // On Linux these are Windows .exe games — offer "Run with Proton". If we can
+  // drive SteamClient live (Decky/CEF) the checkbox sets it automatically; if not,
+  // fall back to the manual Compatibility tip.
+  $('exe-proton-check').hidden = !(platform === 'linux' && steam.found);
+  $('exe-proton-tip').hidden = !(platform === 'linux' && steam.found && !steam.canEditLive);
   $('exe-modal').hidden = false;
 
   const exes = await window.r2sd.listExes(rom.id);
@@ -1012,16 +1015,19 @@ async function playGame(rom) {
 
 async function addToSteam() {
   if (!exeSelected || !exePickerRom) return;
-  const res = await window.r2sd.addToSteam(exeSelected.path, exePickerRom.name || exePickerRom.fs_name);
+  const proton = !$('exe-proton-check').hidden && $('exe-proton').checked;
+  const res = await window.r2sd.addToSteam(exeSelected.path, exePickerRom.name || exePickerRom.fs_name, proton);
   if (res.error) {
     // Keep the picker open (e.g. Steam is running → user needs to quit it first)
     toast(res.error, 'error');
     return;
   }
   closeExePicker();
-  if (res.alreadyPresent) toast('Already in your Steam library', 'success');
-  else if (res.live) toast('Added to Steam — it will appear in your library shortly', 'success');
-  else toast('Added to Steam — restart Steam to see it in your library', 'success');
+  let msg = res.alreadyPresent ? 'Already in your Steam library'
+    : res.live ? 'Added to Steam — it will appear in your library shortly'
+    : 'Added to Steam — restart Steam to see it in your library';
+  if (proton) msg += res.protonLive ? ' · Proton Experimental set' : ' · set Proton in Properties → Compatibility';
+  toast(msg, 'success');
 }
 
 // ── Platform folders modal ──────────────────────────────

@@ -330,11 +330,14 @@ function registerIpc(): void {
   });
 
   // Add to Steam (safe shortcuts.vdf writing)
-  ipcMain.handle('steam:status', () => ({
+  ipcMain.handle('steam:status', async () => ({
     found: steam.findSteamRoot() !== null,
     running: steam.isSteamRunning(),
     users: steam.findSteamUsers().length,
     canAddLive: steam.canAddLive(),
+    // Can we drive SteamClient live (set launch options / Proton) — i.e. is the
+    // CEF debugger reachable (Decky-enabled)?
+    canEditLive: await steamclient.isAvailable(),
   }));
   ipcMain.handle('steam:add', async (_e, exePath: string, appName: string, proton?: boolean) => {
     const res = steam.addNonSteamGameSmart(exePath, appName, { tags: ['RomM'] });
