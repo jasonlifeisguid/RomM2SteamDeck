@@ -118,3 +118,19 @@ export function specifyCompatTool(appId: number, toolName: string): Promise<Stea
 export function setShortcutName(appId: number, name: string): Promise<SteamClientResult> {
   return callApp('SetShortcutName', appId, name);
 }
+
+/**
+ * Set custom artwork for a shortcut live. `assetType` is Steam's library asset
+ * slot (0 = portrait capsule / grid — the main library tile; verified on-device).
+ * `imageType` is "png" or "jpg". Steam writes the image to
+ * userdata/<id>/config/grid/ and shows it immediately.
+ */
+export async function setArtwork(appId: number, base64: string, imageType: string, assetType: number): Promise<SteamClientResult> {
+  if (process.platform !== 'linux') return { ok: false, unavailable: true };
+  const result = await withConnection((c) => c.evaluate(
+    `(async()=>{ try { await SteamClient.Apps.SetCustomArtworkForApp(${appId}, ${JSON.stringify(base64)}, ${JSON.stringify(imageType)}, ${assetType}); return true; } catch(e){ return 'ERR:'+e.message; } })()`
+  ));
+  if (result === null) return { ok: false, unavailable: true, error: 'Steam CEF debugger not reachable' };
+  if (result === true) return { ok: true };
+  return { ok: false, error: String(result) };
+}

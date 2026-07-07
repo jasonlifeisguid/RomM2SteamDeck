@@ -1016,7 +1016,8 @@ async function playGame(rom) {
 async function addToSteam() {
   if (!exeSelected || !exePickerRom) return;
   const proton = !$('exe-proton-check').hidden && $('exe-proton').checked;
-  const res = await window.r2sd.addToSteam(exeSelected.path, exePickerRom.name || exePickerRom.fs_name, proton);
+  const cover = { romId: exePickerRom.id, serverPath: exePickerRom.path_cover_large || exePickerRom.path_cover_small || '' };
+  const res = await window.r2sd.addToSteam(exeSelected.path, exePickerRom.name || exePickerRom.fs_name, proton, cover);
   if (res.error) {
     // Keep the picker open (e.g. Steam is running → user needs to quit it first)
     toast(res.error, 'error');
@@ -1026,7 +1027,12 @@ async function addToSteam() {
   let msg = res.alreadyPresent ? 'Already in your Steam library'
     : res.live ? 'Added to Steam — it will appear in your library shortly'
     : 'Added to Steam — restart Steam to see it in your library';
-  if (proton) msg += res.protonLive ? ' · Proton Experimental set' : ' · set Proton in Properties → Compatibility';
+  const done = [];
+  if (res.nameLive) done.push('named');
+  if (res.artworkLive) done.push('cover art set');
+  if (proton && res.protonLive) done.push('Proton Experimental set');
+  if (done.length) msg += ' · ' + done.join(', ');
+  if (proton && !res.protonLive) msg += ' · set Proton in Properties → Compatibility';
   toast(msg, 'success');
 }
 

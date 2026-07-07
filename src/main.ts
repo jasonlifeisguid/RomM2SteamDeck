@@ -81,20 +81,50 @@ async function pollShortcutAppId(exePath: string): Promise<number | null> {
   return null;
 }
 
-/** Set a shortcut's Launch Options live via SteamClient. Returns false (caller
- *  falls back to the manual tip) if the CEF debugger isn't available or the
- *  shortcut isn't found. */
-async function applyLaunchOptionLive(exePath: string, opts: string): Promise<boolean> {
+/**
+ * Apply live SteamClient edits to a just-added shortcut in one pass (looks up
+ * the appid once). Each field is best-effort; the returned flags say what stuck
+ * so the UI can fall back to manual tips. No-op / all-false when the CEF debugger
+ * isn't available (non-Decky) — the caller then relies on the file-write + tips.
+ */
+// Steam library asset slot for the portrait "capsule" (the main grid tile that
+// RomM cover art maps to). Confirmed on-device via the artwork probe.
+const CAPSULE_ASSET_TYPE = 0;
+
+interface LiveResult { nameLive?: boolean; launchOptionLive?: boolean; protonLive?: boolean; artworkLive?: boolean; }
+
+async function configureShortcutLive(
+  exePath: string,
+  opts: { name?: string; launchOptions?: string; compatTool?: string; artwork?: { base64: string; imageType: string } }
+): Promise<LiveResult> {
   const appId = await pollShortcutAppId(exePath);
-  if (appId === null) return false;
-  return (await steamclient.setLaunchOptions(appId, opts)).ok;
+  if (appId === null) return {};
+  const out: LiveResult = {};
+  // The live add names shortcuts after the filename — set the real name first.
+  if (opts.name) out.nameLive = (await steamclient.setShortcutName(appId, opts.name)).ok;
+  if (opts.launchOptions) out.launchOptionLive = (await steamclient.setLaunchOptions(appId, opts.launchOptions)).ok;
+  if (opts.compatTool) out.protonLive = (await steamclient.specifyCompatTool(appId, opts.compatTool)).ok;
+  if (opts.artwork) out.artworkLive = (await steamclient.setArtwork(appId, opts.artwork.base64, opts.artwork.imageType, CAPSULE_ASSET_TYPE)).ok;
+  return out;
 }
 
-/** Force a Steam Play compat tool live via SteamClient. */
-async function applyCompatToolLive(exePath: string, tool: string): Promise<boolean> {
-  const appId = await pollShortcutAppId(exePath);
-  if (appId === null) return false;
-  return (await steamclient.specifyCompatTool(appId, tool)).ok;
+/** Cover art bytes as base64 for a rom (from cache or the server), for pushing
+ *  to Steam as the shortcut's capsule artwork. Returns null if unavailable. */
+async function fetchCoverBase64(romId: number, serverPath: string): Promise<{ base64: string; imageType: string } | null> {
+  if (!serverPath) return null;
+  try {
+    const file = cache.assetCachePath(romId, serverPath);
+    let data: Buffer | null = fs.existsSync(file) ? fs.readFileSync(file) : null;
+    if (!data) {
+      data = await getClient().getBinary(serverPath);
+      if (data) { fs.mkdirSync(cache.coversDir(), { recursive: true }); fs.writeFileSync(file, data); }
+    }
+    if (!data || !data.length) return null;
+    const imageType = data[0] === 0x89 && data[1] === 0x50 ? 'png' : 'jpg'; // PNG magic vs JPEG
+    return { base64: data.toString('base64'), imageType };
+  } catch {
+    return null;
+  }
 }
 
 /** One-time untangle of the shared %APPDATA%\romm2steamdeck directory. */
@@ -339,12 +369,19 @@ function registerIpc(): void {
     // CEF debugger reachable (Decky-enabled)?
     canEditLive: await steamclient.isAvailable(),
   }));
-  ipcMain.handle('steam:add', async (_e, exePath: string, appName: string, proton?: boolean) => {
+  ipcMain.handle('steam:add', async (_e, exePath: string, appName: string, proton?: boolean, cover?: { romId: number; serverPath: string }) => {
     const res = steam.addNonSteamGameSmart(exePath, appName, { tags: ['RomM'] });
-    // Windows game + Proton requested: force the compat tool LIVE via SteamClient
-    // (Decky/CEF). Falls back to the manual Compatibility tip when unavailable.
-    if (res.ok && proton && process.platform === 'linux') {
-      return { ...res, protonLive: await applyCompatToolLive(exePath, 'proton_experimental') };
+    // Live-configure via SteamClient (Decky/CEF): real game name (the live add
+    // names it after the .exe), optional Proton, and the RomM cover art as the
+    // library capsule. Falls back to the manual tips when the bridge is absent.
+    if (res.ok && process.platform === 'linux') {
+      const artwork = cover?.serverPath ? await fetchCoverBase64(cover.romId, cover.serverPath) : null;
+      const live = await configureShortcutLive(exePath, {
+        name: appName,
+        compatTool: proton ? 'proton_experimental' : undefined,
+        artwork: artwork || undefined,
+      });
+      return { ...res, ...live };
     }
     return res;
   });
@@ -355,10 +392,14 @@ function registerIpc(): void {
       return { ok: false, error: 'This works from the packaged app (installed .exe / AppImage / .app), not a dev run.' };
     }
     const res = steam.addNonSteamGameSmart(self, 'RomM2SteamDeck', { tags: ['RomM'] });
-    // Apply the overlay-strip Launch Option LIVE via SteamClient so it sticks
-    // even in Game Mode / across Cloud (no restart, no revert). Best-effort.
+    // Live-configure via SteamClient: a clean name + the overlay-strip Launch
+    // Option (so it sticks in Game Mode / across Cloud — no restart, no revert).
     if (res.ok && process.platform === 'linux') {
-      return { ...res, launchOptionLive: await applyLaunchOptionLive(self, steam.OVERLAY_STRIP_LAUNCH_OPTS) };
+      const live = await configureShortcutLive(self, {
+        name: 'RomM2SteamDeck',
+        launchOptions: steam.OVERLAY_STRIP_LAUNCH_OPTS,
+      });
+      return { ...res, ...live };
     }
     return res;
   });

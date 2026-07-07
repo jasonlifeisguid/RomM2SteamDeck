@@ -37,7 +37,8 @@ contextBridge.exposeInMainWorld('r2sd', {
   listExes: (romId: number) => ipcRenderer.invoke('game:listExes', romId),
   createShortcut: (exePath: string, gameName: string) => ipcRenderer.invoke('shortcut:create', exePath, gameName),
   steamStatus: () => ipcRenderer.invoke('steam:status'),
-  addToSteam: (exePath: string, gameName: string, proton?: boolean) => ipcRenderer.invoke('steam:add', exePath, gameName, proton),
+  addToSteam: (exePath: string, gameName: string, proton?: boolean, cover?: { romId: number; serverPath: string }) =>
+    ipcRenderer.invoke('steam:add', exePath, gameName, proton, cover),
   addSelfToSteam: () => ipcRenderer.invoke('steam:addSelf'),
   setDefaultExe: (romId: number, exePath: string) => ipcRenderer.invoke('game:setDefaultExe', romId, exePath),
   launchGame: (romId: number, exePath?: string) => ipcRenderer.invoke('game:launch', romId, exePath),
