@@ -73,13 +73,26 @@ export class RommClient {
     }
   }
 
-  /** Open a streaming download of a rom's content. Caller owns the body stream. */
-  async openDownloadStream(romId: number, fsName: string, signal?: AbortSignal): Promise<Response> {
+  /** Open a streaming download of a rom's content. Caller owns the body stream.
+   *  Pass `resume` to request the remainder of a partial download; the caller
+   *  must check `response.status === 206` to know the server honored the range
+   *  (RomM serves single-file roms with range support, but zips multi-file roms
+   *  on the fly, which ignores Range and sends the full body). `ifRange` guards
+   *  against resuming across a changed file: on ETag mismatch the server sends
+   *  the whole file (200) instead of a mismatched tail. */
+  async openDownloadStream(
+    romId: number,
+    fsName: string,
+    signal?: AbortSignal,
+    resume?: { from: number; ifRange?: string }
+  ): Promise<Response> {
     const url = `${this.baseUrl}/api/roms/${romId}/content/${encodeURIComponent(fsName)}`;
-    const response = await fetch(url, {
-      headers: { Authorization: this.authHeader },
-      signal,
-    });
+    const headers: Record<string, string> = { Authorization: this.authHeader };
+    if (resume && resume.from > 0) {
+      headers.Range = `bytes=${resume.from}-`;
+      if (resume.ifRange) headers['If-Range'] = resume.ifRange;
+    }
+    const response = await fetch(url, { headers, signal });
     if (!response.ok || !response.body) {
       throw new Error(`Download failed: ${response.status} ${response.statusText}`);
     }

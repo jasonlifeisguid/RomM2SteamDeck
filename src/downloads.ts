@@ -236,107 +236,219 @@ export async function startDownload(
   const cfg = config.getPublicConfig();
   const archiveDir = extract ? (cfg.stagingPath || installPath) : setup.folder;
 
-  const controller = new AbortController();
-  activeDownloads.set(rom.id, controller);
+  // ── Resume support ──────────────────────────────────────────────────
+  // A failed/interrupted download leaves "<file>.part" plus a small sidecar
+  // holding the server ETag; the next attempt (automatic retry or a later
+  // manual click, even after an app restart) asks the server to continue with
+  // Range/If-Range. RomM serves single-file roms from disk with range support
+  // (206 Partial Content); multi-file roms are zipped on the fly and ignore
+  // Range (200) — detected per response, in which case we restart from byte 0.
+  const resumeMetaPath = path.join(archiveDir, `.r2sd-resume-${rom.id}.json`);
+  const readResumeMeta = (): { fileName: string; etag: string; partPath: string } | null => {
+    try {
+      const m = JSON.parse(fs.readFileSync(resumeMetaPath, 'utf-8'));
+      return m && m.partPath && fs.existsSync(m.partPath) ? m : null;
+    } catch { return null; }
+  };
+
   emit({ status: 'starting' });
 
+  const STALL_TIMEOUT_MS = 60_000; // no bytes for this long → abort + retry
+  const MAX_ATTEMPTS = 3;          // 1 try + 2 automatic retries
+  const RETRY_DELAY_MS = [2000, 5000];
+
   let filePath = '';
+  let partPath = '';
+  let fileName = rom.fsName;
+  let etag = '';
+  let downloaded = 0;
+  let total = 0;
+  let isZip = false;
+  let is7z = false;
+  let inlineExtracted = false;
+  let userCancelled = false;
   const extractedTopLevels = new Set<string>();
 
   try {
     fs.mkdirSync(archiveDir, { recursive: true });
     if (extract) fs.mkdirSync(installPath, { recursive: true });
 
-    const response = await client.openDownloadStream(rom.id, rom.fsName, controller.signal);
-    const total = Number(response.headers.get('content-length')) || rom.size || 0;
+    let pumped = false;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS && !pumped; attempt++) {
+      // Fresh controller per attempt — an aborted controller can't be reused.
+      const controller = new AbortController() as AbortController & { stalled?: boolean };
+      activeDownloads.set(rom.id, controller);
 
-    // Prefer the server-provided filename (multi-file roms arrive as a zip)
-    let fileName = rom.fsName;
-    const disposition = response.headers.get('content-disposition');
-    const dispMatch = disposition?.match(/filename="?([^";]+)"?/);
-    if (dispMatch) fileName = decodeURIComponent(dispMatch[1]);
-    filePath = path.join(archiveDir, fileName);
+      // Partial left by a previous attempt (this run or an earlier session)?
+      const meta = readResumeMeta();
+      let resumeFrom = 0;
+      if (meta) {
+        try { resumeFrom = fs.statSync(meta.partPath).size; } catch { resumeFrom = 0; }
+        if (resumeFrom > 0) { fileName = meta.fileName; etag = meta.etag || etag; }
+      }
 
-    const isZip = fileName.toLowerCase().endsWith('.zip');
-    const is7z = fileName.toLowerCase().endsWith('.7z');
+      try {
+        const response = await client.openDownloadStream(
+          rom.id, rom.fsName, controller.signal,
+          resumeFrom > 0 ? { from: resumeFrom, ifRange: etag || undefined } : undefined
+        );
+        etag = response.headers.get('etag') || etag;
 
-    // Already fully downloaded and not an extraction run? Skip.
-    if (!extract && fs.existsSync(filePath) && total > 0 && fs.statSync(filePath).size === total) {
-      controller.abort();
-      upsertRecord({ romId: rom.id, romName: rom.name, fileName, filePath, platformId: rom.platformId, size: total, downloadedAt: Date.now() });
-      emit({ status: 'complete', percent: 100, message: 'Already downloaded', path: filePath });
-      return;
-    }
+        // 206 = the server is continuing our partial. Anything else (fresh
+        // start, range unsupported on an on-the-fly zip, or the file changed
+        // under If-Range) is a full body from byte 0.
+        const resumed = resumeFrom > 0 && response.status === 206;
+        if (resumed) {
+          const cr = response.headers.get('content-range');
+          const crMatch = cr?.match(/\/(\d+)\s*$/);
+          total = crMatch ? Number(crMatch[1]) : resumeFrom + (Number(response.headers.get('content-length')) || 0);
+        } else {
+          total = Number(response.headers.get('content-length')) || rom.size || 0;
+          // Prefer the server-provided filename (multi-file roms arrive as a zip)
+          const disposition = response.headers.get('content-disposition');
+          const dispMatch = disposition?.match(/filename="?([^";]+)"?/);
+          if (dispMatch) fileName = decodeURIComponent(dispMatch[1]);
+        }
 
-    // Set up the streaming zip extractor (zip + auto-extract only)
-    let extractor: any = null;
-    let extractorFailed = false;
-    const entryWrites: Promise<void>[] = [];
-    let extractorClosed: Promise<void> = Promise.resolve();
+        filePath = path.join(archiveDir, fileName);
+        partPath = filePath + '.part';
+        isZip = fileName.toLowerCase().endsWith('.zip');
+        is7z = fileName.toLowerCase().endsWith('.7z');
 
-    if (extract && isZip) {
-      extractor = unzipper.Parse();
-      extractorClosed = new Promise<void>((resolve) => {
-        extractor.on('close', resolve);
-        extractor.on('error', () => { extractorFailed = true; resolve(); });
-      });
-      extractor.on('entry', (entry: any) => {
-        const target = safeJoin(installPath, entry.path);
-        if (!target || extractorFailed) { entry.autodrain(); return; }
-        extractedTopLevels.add(entry.path.replace(/\\/g, '/').split('/')[0]);
-        if (entry.type === 'Directory') {
-          fs.mkdirSync(target, { recursive: true });
-          entry.autodrain();
+        // Already fully downloaded and not an extraction run? Skip.
+        if (!extract && fs.existsSync(filePath) && total > 0 && fs.statSync(filePath).size === total) {
+          controller.abort();
+          try { fs.unlinkSync(resumeMetaPath); } catch { /* absent */ }
+          try { if (fs.existsSync(partPath)) fs.unlinkSync(partPath); } catch { /* best effort */ }
+          upsertRecord({ romId: rom.id, romName: rom.name, fileName, filePath, platformId: rom.platformId, size: total, downloadedAt: Date.now() });
+          emit({ status: 'complete', percent: 100, message: 'Already downloaded', path: filePath });
           return;
         }
-        fs.mkdirSync(path.dirname(target), { recursive: true });
-        entryWrites.push(new Promise<void>((resolve) => {
-          const out = fs.createWriteStream(target);
-          entry.pipe(out);
-          out.on('finish', resolve);
-          out.on('error', () => { extractorFailed = true; entry.autodrain(); resolve(); });
-          entry.on('error', () => { extractorFailed = true; resolve(); });
-        }));
-      });
-    }
 
-    // Pump: chunk → archive file AND (optionally) extractor, with backpressure on both
-    const out = fs.createWriteStream(filePath);
-    const writeTo = (stream: NodeJS.WritableStream, chunk: Buffer) =>
-      new Promise<void>((resolve, reject) => {
-        stream.write(chunk, (err) => (err ? reject(err) : resolve()));
-      });
+        // Streaming zip extractor (zip + auto-extract only). Only possible from
+        // byte 0 — a zip stream can't be joined mid-file — so resumed archives
+        // skip this and extract after download via the 7za fallback instead.
+        let extractor: any = null;
+        let extractorFailed = false;
+        const entryWrites: Promise<void>[] = [];
+        let extractorClosed: Promise<void> = Promise.resolve();
 
-    let downloaded = 0;
-    let lastEmit = 0;
-    const body = response.body!;
-    const reader = body.getReader();
+        if (extract && isZip && !resumed) {
+          extractor = unzipper.Parse();
+          extractorClosed = new Promise<void>((resolve) => {
+            extractor.on('close', resolve);
+            extractor.on('error', () => { extractorFailed = true; resolve(); });
+          });
+          extractor.on('entry', (entry: any) => {
+            const target = safeJoin(installPath, entry.path);
+            if (!target || extractorFailed) { entry.autodrain(); return; }
+            extractedTopLevels.add(entry.path.replace(/\\/g, '/').split('/')[0]);
+            if (entry.type === 'Directory') {
+              fs.mkdirSync(target, { recursive: true });
+              entry.autodrain();
+              return;
+            }
+            fs.mkdirSync(path.dirname(target), { recursive: true });
+            entryWrites.push(new Promise<void>((resolve) => {
+              const out = fs.createWriteStream(target);
+              entry.pipe(out);
+              out.on('finish', resolve);
+              out.on('error', () => { extractorFailed = true; entry.autodrain(); resolve(); });
+              entry.on('error', () => { extractorFailed = true; resolve(); });
+            }));
+          });
+        }
 
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      const chunk = Buffer.from(value);
-      await writeTo(out, chunk);
-      if (extractor && !extractorFailed) {
-        try { await writeTo(extractor, chunk); } catch { extractorFailed = true; }
-      }
-      downloaded += chunk.length;
-      const now = Date.now();
-      if (now - lastEmit > 250) {
-        lastEmit = now;
+        // Pump: chunk → part file AND (optionally) extractor, with backpressure on both
+        const out = fs.createWriteStream(partPath, resumed ? { flags: 'a' } : undefined);
+        const writeTo = (stream: NodeJS.WritableStream, chunk: Buffer) =>
+          new Promise<void>((resolve, reject) => {
+            stream.write(chunk, (err) => (err ? reject(err) : resolve()));
+          });
+
+        downloaded = resumed ? resumeFrom : 0;
+        if (resumed) {
+          emit({ status: 'downloading', downloaded, total, percent: total > 0 ? Math.floor((downloaded / total) * 100) : 0, message: 'Resuming download' });
+        }
+
+        let lastEmit = 0;
+        let lastData = Date.now();
+        // Stall watchdog: a connection that dies without closing would other-
+        // wise block reader.read() forever (and the serial queue behind it).
+        const watchdog = setInterval(() => {
+          if (Date.now() - lastData > STALL_TIMEOUT_MS) { controller.stalled = true; controller.abort(); }
+        }, 5000);
+
+        try {
+          const body = response.body!;
+          const reader = body.getReader();
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            lastData = Date.now();
+            const chunk = Buffer.from(value);
+            await writeTo(out, chunk);
+            if (extractor && !extractorFailed) {
+              try { await writeTo(extractor, chunk); } catch { extractorFailed = true; }
+            }
+            downloaded += chunk.length;
+            const now = Date.now();
+            if (now - lastEmit > 250) {
+              lastEmit = now;
+              emit({
+                status: 'downloading',
+                downloaded, total,
+                percent: total > 0 ? Math.floor((downloaded / total) * 100) : 0,
+                inlineExtract: Boolean(extractor && !extractorFailed),
+              });
+            }
+          }
+        } finally {
+          clearInterval(watchdog);
+        }
+
+        await new Promise<void>((resolve, reject) => out.end((err: Error | null | undefined) => (err ? reject(err) : resolve())));
+
+        if (downloaded === 0) {
+          throw new Error('Server sent an empty file — this rom appears to be 0 bytes in the RomM library');
+        }
+        if (total > 0 && downloaded < total) {
+          throw new Error(`Connection closed early — got ${downloaded} of ${total} bytes`);
+        }
+
+        // Complete: finish inline extraction, then promote .part → real name
+        if (extractor && !extractorFailed) {
+          extractor.end();
+          await extractorClosed;
+          await Promise.all(entryWrites);
+          inlineExtracted = !extractorFailed;
+        }
+        try { fs.unlinkSync(resumeMetaPath); } catch { /* absent */ }
+        try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best effort */ }
+        fs.renameSync(partPath, filePath);
+        pumped = true;
+      } catch (err) {
+        // User cancel (abort without the stall flag) propagates immediately.
+        if (controller.signal.aborted && !controller.stalled) { userCancelled = true; throw err; }
+        // Keep the partial + ETag so the next attempt (or a later manual
+        // download) can resume instead of starting over.
+        if (partPath && fs.existsSync(partPath) && fs.statSync(partPath).size > 0) {
+          try { fs.writeFileSync(resumeMetaPath, JSON.stringify({ fileName, etag, partPath })); } catch { /* best effort */ }
+        }
+        const msg = err instanceof Error ? err.message : String(err);
+        const retryable = !/empty file|Download failed: 4\d\d/.test(msg);
+        if (!retryable || attempt >= MAX_ATTEMPTS) throw err;
         emit({
-          status: 'downloading',
-          downloaded, total,
+          status: 'downloading', downloaded, total,
           percent: total > 0 ? Math.floor((downloaded / total) * 100) : 0,
-          inlineExtract: Boolean(extractor && !extractorFailed),
+          message: `Connection lost — retrying (${attempt + 1}/${MAX_ATTEMPTS})…`,
         });
+        await new Promise((r) => setTimeout(r, RETRY_DELAY_MS[attempt - 1] ?? 5000));
+        // Cancelled while waiting to retry?
+        const cur = activeDownloads.get(rom.id) as (AbortController & { stalled?: boolean }) | undefined;
+        if (cur?.signal.aborted && !cur.stalled) { userCancelled = true; throw err; }
       }
-    }
-
-    await new Promise<void>((resolve, reject) => out.end((err: Error | null | undefined) => (err ? reject(err) : resolve())));
-
-    if (downloaded === 0) {
-      throw new Error('Server sent an empty file — this rom appears to be 0 bytes in the RomM library');
     }
 
     // ── Post-download ────────────────────────────────────────────────
@@ -346,13 +458,7 @@ export async function startDownload(
       return;
     }
 
-    let extracted = false;
-    if (extractor && !extractorFailed) {
-      extractor.end();
-      await extractorClosed;
-      await Promise.all(entryWrites);
-      extracted = !extractorFailed;
-    }
+    let extracted = inlineExtracted;
 
     if (!extracted && (isZip || is7z)) {
       // Fallback (or 7z): extract the on-disk archive with bundled 7za
@@ -391,23 +497,34 @@ export async function startDownload(
     upsertRecord({ romId: rom.id, romName: rom.name, fileName, filePath: gameFolder, platformId: rom.platformId, size: downloaded, downloadedAt: Date.now() });
     emit({ status: 'extracted', percent: 100, path: gameFolder || installPath });
   } catch (err) {
-    const cancelled = controller.signal.aborted;
-    // Clean up the partial archive
-    try { if (filePath && fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best effort */ }
-    // Best-effort cleanup of partially extracted content on cancel
-    if (cancelled && extract && installPath) {
-      for (const top of extractedTopLevels) {
-        const target = safeJoin(installPath, top);
-        if (target && !isProtected(target)) {
-          try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* best effort */ }
+    if (userCancelled) {
+      // User cancelled: throw everything away, including the resume state
+      try { fs.unlinkSync(resumeMetaPath); } catch { /* absent */ }
+      try { if (partPath && fs.existsSync(partPath)) fs.unlinkSync(partPath); } catch { /* best effort */ }
+      // Best-effort cleanup of partially extracted content
+      if (extract && installPath) {
+        for (const top of extractedTopLevels) {
+          const target = safeJoin(installPath, top);
+          if (target && !isProtected(target)) {
+            try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
         }
       }
-    }
-    if (cancelled) {
       emit({ status: 'cancelled', message: 'Download cancelled' });
     } else {
+      // Failure after retries: KEEP the .part + sidecar so a later manual
+      // download picks up where this one stopped (resume metadata was written
+      // in the attempt-level catch).
       console.error(`Download ${rom.id} failed:`, err);
-      emit({ status: 'error', message: err instanceof Error ? err.message : String(err) });
+      const base = err instanceof Error ? err.message : String(err);
+      let saved = '';
+      try {
+        if (partPath && fs.existsSync(partPath) && fs.existsSync(resumeMetaPath) && total > 0) {
+          const pct = Math.floor((fs.statSync(partPath).size / total) * 100);
+          if (pct > 0) saved = ` — ${pct}% saved; downloading again will resume from there`;
+        }
+      } catch { /* best effort */ }
+      emit({ status: 'error', message: base + saved });
     }
   } finally {
     activeDownloads.delete(rom.id);
