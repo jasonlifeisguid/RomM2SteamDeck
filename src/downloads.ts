@@ -332,29 +332,48 @@ export async function startDownload(
         let extractorFailed = false;
         const entryWrites: Promise<void>[] = [];
         let extractorClosed: Promise<void> = Promise.resolve();
+        // Resolves the moment the extractor dies (bad entry path, disk full,
+        // corrupt entry, …). A write already in flight to a stream that just
+        // errored can otherwise never call its callback — see failExtractor().
+        let extractorErrorSignal: Promise<void> = new Promise(() => { /* never, unless replaced below */ });
 
         if (extract && isZip && !resumed) {
           extractor = unzipper.Parse();
+          let signalError: () => void = () => {};
+          extractorErrorSignal = new Promise<void>((resolve) => { signalError = resolve; });
+          const failExtractor = () => { extractorFailed = true; signalError(); };
           extractorClosed = new Promise<void>((resolve) => {
             extractor.on('close', resolve);
-            extractor.on('error', () => { extractorFailed = true; resolve(); });
+            extractor.on('error', () => { failExtractor(); resolve(); });
           });
           extractor.on('entry', (entry: any) => {
             const target = safeJoin(installPath, entry.path);
             if (!target || extractorFailed) { entry.autodrain(); return; }
             extractedTopLevels.add(entry.path.replace(/\\/g, '/').split('/')[0]);
-            if (entry.type === 'Directory') {
-              fs.mkdirSync(target, { recursive: true });
+            // A destination the target filesystem can't create (illegal
+            // characters, path too long, disk full, permissions…) must not
+            // escape as an uncaught exception here — left unguarded, it
+            // unwinds through the parser in a way that kills the extractor
+            // without ever failing the in-flight write() below, hanging the
+            // download forever instead of falling back to on-disk 7za extract.
+            try {
+              if (entry.type === 'Directory') {
+                fs.mkdirSync(target, { recursive: true });
+                entry.autodrain();
+                return;
+              }
+              fs.mkdirSync(path.dirname(target), { recursive: true });
+            } catch {
+              failExtractor();
               entry.autodrain();
               return;
             }
-            fs.mkdirSync(path.dirname(target), { recursive: true });
             entryWrites.push(new Promise<void>((resolve) => {
               const out = fs.createWriteStream(target);
               entry.pipe(out);
               out.on('finish', resolve);
-              out.on('error', () => { extractorFailed = true; entry.autodrain(); resolve(); });
-              entry.on('error', () => { extractorFailed = true; resolve(); });
+              out.on('error', () => { failExtractor(); entry.autodrain(); resolve(); });
+              entry.on('error', () => { failExtractor(); resolve(); });
             }));
           });
         }
@@ -390,7 +409,11 @@ export async function startDownload(
             const chunk = Buffer.from(value);
             await writeTo(out, chunk);
             if (extractor && !extractorFailed) {
-              try { await writeTo(extractor, chunk); } catch { extractorFailed = true; }
+              // Race against extractorErrorSignal: if the extractor died from
+              // this very chunk (or a prior one), its write() callback may
+              // never fire — without the race, this await (and the whole
+              // download) would hang forever instead of falling back to 7za.
+              try { await Promise.race([writeTo(extractor, chunk), extractorErrorSignal]); } catch { extractorFailed = true; }
             }
             downloaded += chunk.length;
             const now = Date.now();
