@@ -10,6 +10,9 @@ const path = require('path');
 const { spawnSync } = require('child_process');
 
 const path7za = require('7zip-bin').path7za;
+// The bundled 7za ships without its exec bit on Linux/macOS (the packaged app
+// fixes that in build/after-pack.js; run7za() also chmods at runtime).
+if (process.platform !== 'win32') { try { fs.chmodSync(path7za, 0o755); } catch { /* read-only */ } }
 const config = require('../dist/config.js');
 const downloads = require('../dist/downloads.js');
 
