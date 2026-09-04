@@ -35,10 +35,10 @@ contextBridge.exposeInMainWorld('r2sd', {
   getVersion: () => ipcRenderer.invoke('app:version'),
   quitApp: () => ipcRenderer.invoke('app:quit'),
   listExes: (romId: number) => ipcRenderer.invoke('game:listExes', romId),
-  createShortcut: (exePath: string, gameName: string) => ipcRenderer.invoke('shortcut:create', exePath, gameName),
+  createShortcut: (romId: number, exePath: string, gameName: string) => ipcRenderer.invoke('shortcut:create', romId, exePath, gameName),
   steamStatus: () => ipcRenderer.invoke('steam:status'),
-  addToSteam: (exePath: string, gameName: string, proton?: boolean, cover?: { romId: number; serverPath: string }) =>
-    ipcRenderer.invoke('steam:add', exePath, gameName, proton, cover),
+  addToSteam: (romId: number, exePath: string, gameName: string, proton?: boolean, coverPath?: string) =>
+    ipcRenderer.invoke('steam:add', romId, exePath, gameName, proton, coverPath),
   addSelfToSteam: () => ipcRenderer.invoke('steam:addSelf'),
   setDefaultExe: (romId: number, exePath: string) => ipcRenderer.invoke('game:setDefaultExe', romId, exePath),
   launchGame: (romId: number, exePath?: string) => ipcRenderer.invoke('game:launch', romId, exePath),
@@ -50,4 +50,6 @@ contextBridge.exposeInMainWorld('r2sd', {
     ipcRenderer.on('library:roms-updated', (_e, payload) => cb(payload)),
   onRomsProgress: (cb: (payload: unknown) => void) =>
     ipcRenderer.on('library:roms-progress', (_e, payload) => cb(payload)),
+  onRefreshFailed: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('library:refresh-failed', (_e, payload) => cb(payload)),
 });

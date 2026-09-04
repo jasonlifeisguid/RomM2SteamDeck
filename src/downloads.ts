@@ -11,13 +11,24 @@
  *  - .7z: not streamable by design (solid blocks, trailing metadata) —
  *    download fully, then extract with bundled 7za (progress parsed from
  *    its output).
+ *
+ * Every archive is extracted into a private staging folder inside the install
+ * path (`.r2sd-extract-<romId>/`) and only then moved to its final name. That
+ * gives each game exactly one folder regardless of how the archive was laid
+ * out: a single top-level directory is moved as-is; a flat archive (files at
+ * the root) or one with several top-level entries becomes `<rom name>/`.
+ * Before this, a flat archive left the game's files loose in the install root
+ * and the tracking record pointed at whichever subfolder came first — so
+ * "delete" removed only that subfolder and the exe scanner never saw the exe.
  */
 import { app } from 'electron';
 import { spawn } from 'child_process';
+import { once } from 'events';
 import * as fs from 'fs';
 import * as path from 'path';
 import { RommClient } from './romm';
 import * as config from './config';
+import { safeJoin, sanitizeForMatch, sanitizeFolderName } from './fsutil';
 
 const unzipper = require('unzipper');
 // In a packaged app the 7za binary is unpacked from the asar archive (see
@@ -102,8 +113,13 @@ async function processQueue(): Promise<void> {
 
 // ── Tracking records (userData/downloads.json) ──────────────────────────
 
+// Where downloads.json lives. Overridable so the download/extract pipeline can
+// be exercised by `npm test` under plain Node, where `app` is not available.
+let userDataDirOverride: string | null = null;
+export function setUserDataDirForTests(dir: string | null): void { userDataDirOverride = dir; }
+
 function recordsPath(): string {
-  return path.join(app.getPath('userData'), 'downloads.json');
+  return path.join(userDataDirOverride ?? app.getPath('userData'), 'downloads.json');
 }
 
 function loadRecords(): DownloadRecord[] {
@@ -122,6 +138,10 @@ function saveRecords(records: DownloadRecord[]): void {
 
 export function listDownloads(): DownloadRecord[] {
   return loadRecords();
+}
+
+export function findDownload(romId: number): DownloadRecord | undefined {
+  return loadRecords().find((r) => r.romId === romId);
 }
 
 function upsertRecord(record: DownloadRecord): void {
@@ -151,10 +171,6 @@ function platformSetup(platformId: number): config.PlatformSetup {
     ?? { folder: '', autoExtract: false, installPaths: [] };
 }
 
-function sanitizeForMatch(name: string): string {
-  return name.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
-}
-
 /** All configured root folders — deletion of these is always refused. */
 function protectedRoots(): Set<string> {
   const cfg = config.getPublicConfig();
@@ -169,17 +185,16 @@ function protectedRoots(): Set<string> {
   return roots;
 }
 
-function isProtected(target: string): boolean {
-  return protectedRoots().has(path.normalize(target).toLowerCase());
+function isProtected(target: string, roots = protectedRoots()): boolean {
+  return roots.has(path.normalize(target).toLowerCase());
 }
 
-/** Guard against zip-slip: resolved entry must stay inside the destination. */
-function safeJoin(destRoot: string, entryPath: string): string | null {
-  const target = path.resolve(destRoot, entryPath.replace(/\\/g, '/'));
-  const root = path.resolve(destRoot);
-  if (target !== root && !target.startsWith(root + path.sep)) return null;
-  return target;
+/** Private per-rom staging folder for extraction, inside the install path. */
+function extractStagingDir(installPath: string, romId: number): string {
+  return path.join(installPath, `.r2sd-extract-${romId}`);
 }
+
+const STAGING_DIR_RE = /^\.r2sd-extract-\d+$/;
 
 function run7za(archive: string, dest: string, onPercent: (pct: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -203,6 +218,36 @@ function run7za(archive: string, dest: string, onPercent: (pct: number) => void)
       else reject(new Error(`7za exited ${code}: ${stderr.slice(0, 300)}`));
     });
   });
+}
+
+/**
+ * Move the extracted content out of the staging folder to its final home and
+ * return that folder. One top-level directory → moved as-is (keeps the
+ * archive's own folder name); anything else → everything goes under
+ * `<install path>/<rom name>/`. An existing folder of the same name is a
+ * re-install of the same game and is replaced.
+ */
+function promoteExtracted(staging: string, installPath: string, rom: RomInfo): string {
+  const tops = fs.readdirSync(staging);
+  if (tops.length === 0) throw new Error('Archive was empty — nothing was extracted');
+
+  let dest: string;
+  let source: string;
+  if (tops.length === 1 && fs.statSync(path.join(staging, tops[0])).isDirectory()) {
+    source = path.join(staging, tops[0]);
+    dest = path.join(installPath, tops[0]);
+  } else {
+    source = staging;
+    dest = path.join(installPath, sanitizeFolderName(rom.name || rom.fsName.replace(/\.[^.]+$/, '')));
+  }
+
+  if (fs.existsSync(dest)) {
+    if (isProtected(dest)) throw new Error(`Refusing to replace a configured folder: ${dest}`);
+    fs.rmSync(dest, { recursive: true, force: true });
+  }
+  fs.renameSync(source, dest);
+  fs.rmSync(staging, { recursive: true, force: true }); // no-op when staging itself moved
+  return dest;
 }
 
 // ── Download ────────────────────────────────────────────────────────────
@@ -235,6 +280,7 @@ export async function startDownload(
 
   const cfg = config.getPublicConfig();
   const archiveDir = extract ? (cfg.stagingPath || installPath) : setup.folder;
+  const staging = extract ? extractStagingDir(installPath, rom.id) : '';
 
   // ── Resume support ──────────────────────────────────────────────────
   // A failed/interrupted download leaves "<file>.part" plus a small sidecar
@@ -267,7 +313,8 @@ export async function startDownload(
   let is7z = false;
   let inlineExtracted = false;
   let userCancelled = false;
-  const extractedTopLevels = new Set<string>();
+
+  const clearStaging = () => { if (staging) { try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* best effort */ } } };
 
   try {
     fs.mkdirSync(archiveDir, { recursive: true });
@@ -328,34 +375,34 @@ export async function startDownload(
         // Streaming zip extractor (zip + auto-extract only). Only possible from
         // byte 0 — a zip stream can't be joined mid-file — so resumed archives
         // skip this and extract after download via the 7za fallback instead.
+        // Entries land in the staging folder, never directly in the install path.
         let extractor: any = null;
         let extractorFailed = false;
         const entryWrites: Promise<void>[] = [];
         let extractorClosed: Promise<void> = Promise.resolve();
-        // Resolves the moment the extractor dies (bad entry path, disk full,
-        // corrupt entry, …). A write already in flight to a stream that just
-        // errored can otherwise never call its callback — see failExtractor().
-        let extractorErrorSignal: Promise<void> = new Promise(() => { /* never, unless replaced below */ });
+        // Resolves the moment any part of inline extraction fails, so the pump
+        // never sits waiting for a 'drain' from a parser that has stopped.
+        let signalFailed: () => void = () => {};
+        const extractorFailedP = new Promise<void>((resolve) => { signalFailed = resolve; });
+        const failExtractor = () => { extractorFailed = true; signalFailed(); };
 
         if (extract && isZip && !resumed) {
+          clearStaging();
+          fs.mkdirSync(staging, { recursive: true });
           extractor = unzipper.Parse();
-          let signalError: () => void = () => {};
-          extractorErrorSignal = new Promise<void>((resolve) => { signalError = resolve; });
-          const failExtractor = () => { extractorFailed = true; signalError(); };
           extractorClosed = new Promise<void>((resolve) => {
             extractor.on('close', resolve);
             extractor.on('error', () => { failExtractor(); resolve(); });
           });
           extractor.on('entry', (entry: any) => {
-            const target = safeJoin(installPath, entry.path);
+            const target = safeJoin(staging, entry.path);
             if (!target || extractorFailed) { entry.autodrain(); return; }
-            extractedTopLevels.add(entry.path.replace(/\\/g, '/').split('/')[0]);
-            // A destination the target filesystem can't create (illegal
-            // characters, path too long, disk full, permissions…) must not
-            // escape as an uncaught exception here — left unguarded, it
-            // unwinds through the parser in a way that kills the extractor
-            // without ever failing the in-flight write() below, hanging the
-            // download forever instead of falling back to on-disk 7za extract.
+            // Never let a filesystem error escape this listener (illegal name,
+            // path too long, a file where a directory is needed, disk full…).
+            // unzipper turns a throw here into an 'error' event today, but
+            // relying on that is fragile — and with the old await-per-write
+            // pump it hung the download outright (PR #5, vlapietra). Failing
+            // the extractor explicitly routes us to the 7za fallback.
             try {
               if (entry.type === 'Directory') {
                 fs.mkdirSync(target, { recursive: true });
@@ -373,17 +420,19 @@ export async function startDownload(
               entry.pipe(out);
               out.on('finish', resolve);
               out.on('error', () => { failExtractor(); entry.autodrain(); resolve(); });
-              entry.on('error', () => { failExtractor(); resolve(); });
+              entry.on('error', () => { failExtractor(); entry.autodrain(); resolve(); });
             }));
           });
         }
 
-        // Pump: chunk → part file AND (optionally) extractor, with backpressure on both
+        // Pump: chunk → part file AND (optionally) extractor. Backpressure is
+        // drain-based: we only wait when a writable's buffer is full, so network
+        // reads and disk writes overlap. (Awaiting every write's completion
+        // callback serialized the two, making a download take roughly network
+        // time PLUS disk time — noticeable on the Deck's SD card.)
         const out = fs.createWriteStream(partPath, resumed ? { flags: 'a' } : undefined);
-        const writeTo = (stream: NodeJS.WritableStream, chunk: Buffer) =>
-          new Promise<void>((resolve, reject) => {
-            stream.write(chunk, (err) => (err ? reject(err) : resolve()));
-          });
+        let outError: Error | null = null;
+        out.on('error', (e) => { outError = e; });
 
         downloaded = resumed ? resumeFrom : 0;
         if (resumed) {
@@ -407,13 +456,12 @@ export async function startDownload(
             if (done) break;
             lastData = Date.now();
             const chunk = Buffer.from(value);
-            await writeTo(out, chunk);
+            if (!out.write(chunk)) await once(out, 'drain');
+            if (outError) throw outError;
             if (extractor && !extractorFailed) {
-              // Race against extractorErrorSignal: if the extractor died from
-              // this very chunk (or a prior one), its write() callback may
-              // never fire — without the race, this await (and the whole
-              // download) would hang forever instead of falling back to 7za.
-              try { await Promise.race([writeTo(extractor, chunk), extractorErrorSignal]); } catch { extractorFailed = true; }
+              try {
+                if (!extractor.write(chunk)) await Promise.race([once(extractor, 'drain'), extractorClosed, extractorFailedP]);
+              } catch { failExtractor(); }
             }
             downloaded += chunk.length;
             const now = Date.now();
@@ -432,6 +480,7 @@ export async function startDownload(
         }
 
         await new Promise<void>((resolve, reject) => out.end((err: Error | null | undefined) => (err ? reject(err) : resolve())));
+        if (outError) throw outError;
 
         if (downloaded === 0) {
           throw new Error('Server sent an empty file — this rom appears to be 0 bytes in the RomM library');
@@ -446,6 +495,9 @@ export async function startDownload(
           await extractorClosed;
           await Promise.all(entryWrites);
           inlineExtracted = !extractorFailed;
+        }
+        if (extractor && !inlineExtracted) {
+          try { extractor.destroy(); } catch { /* already closed */ }
         }
         try { fs.unlinkSync(resumeMetaPath); } catch { /* absent */ }
         try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best effort */ }
@@ -481,19 +533,6 @@ export async function startDownload(
       return;
     }
 
-    let extracted = inlineExtracted;
-
-    if (!extracted && (isZip || is7z)) {
-      // Fallback (or 7z): extract the on-disk archive with bundled 7za
-      emit({ status: 'extracting', percent: 0 });
-      const before = new Set(fs.readdirSync(installPath));
-      await run7za(filePath, installPath, (pct) => emit({ status: 'extracting', percent: pct }));
-      for (const item of fs.readdirSync(installPath)) {
-        if (!before.has(item) && item !== fileName) extractedTopLevels.add(item);
-      }
-      extracted = true;
-    }
-
     if (!isZip && !is7z) {
       // Not an archive — auto-extract platform but plain file: move to install path
       const finalPath = path.join(installPath, fileName);
@@ -506,33 +545,29 @@ export async function startDownload(
       return;
     }
 
-    // Work out the game folder for tracking. Never record the install root
-    // itself — a later delete would wipe every game in it.
-    extractedTopLevels.delete(path.basename(filePath));
-    let gameFolder = '';
-    const tops = [...extractedTopLevels].map((t) => path.join(installPath, t)).filter((p) => fs.existsSync(p));
-    const topDirs = tops.filter((p) => fs.statSync(p).isDirectory());
-    if (tops.length > 0) gameFolder = (topDirs[0] ?? tops[0]);
+    if (!inlineExtracted) {
+      // Fallback (or 7z): extract the on-disk archive with bundled 7za
+      emit({ status: 'extracting', percent: 0 });
+      clearStaging();
+      fs.mkdirSync(staging, { recursive: true });
+      await run7za(filePath, staging, (pct) => emit({ status: 'extracting', percent: pct }));
+    }
+
+    const gameFolder = promoteExtracted(staging, installPath, rom);
 
     // Remove the archive after successful extraction
     try { fs.unlinkSync(filePath); } catch { /* best effort */ }
 
     upsertRecord({ romId: rom.id, romName: rom.name, fileName, filePath: gameFolder, platformId: rom.platformId, size: downloaded, downloadedAt: Date.now() });
-    emit({ status: 'extracted', percent: 100, path: gameFolder || installPath });
+    emit({ status: 'extracted', percent: 100, path: gameFolder });
   } catch (err) {
+    // Whatever happened, half-extracted content in the staging folder is junk:
+    // a retry re-extracts from the archive, a cancel discards everything.
+    clearStaging();
     if (userCancelled) {
       // User cancelled: throw everything away, including the resume state
       try { fs.unlinkSync(resumeMetaPath); } catch { /* absent */ }
       try { if (partPath && fs.existsSync(partPath)) fs.unlinkSync(partPath); } catch { /* best effort */ }
-      // Best-effort cleanup of partially extracted content
-      if (extract && installPath) {
-        for (const top of extractedTopLevels) {
-          const target = safeJoin(installPath, top);
-          if (target && !isProtected(target)) {
-            try { fs.rmSync(target, { recursive: true, force: true }); } catch { /* best effort */ }
-          }
-        }
-      }
       emit({ status: 'cancelled', message: 'Download cancelled' });
     } else {
       // Failure after retries: KEEP the .part + sidecar so a later manual
@@ -573,7 +608,7 @@ export function cancelDownload(romId: number): boolean {
 // ── Delete ──────────────────────────────────────────────────────────────
 
 export function deleteDownload(romId: number): { deleted: string[]; error?: string } {
-  const record = loadRecords().find((r) => r.romId === romId);
+  const record = findDownload(romId);
   if (!record) return { deleted: [], error: 'Not tracked as downloaded' };
 
   const deleted: string[] = [];
@@ -596,26 +631,24 @@ export function deleteDownload(romId: number): { deleted: string[]; error?: stri
  *  - drop records whose files vanished
  *  - adopt files in the platform folder matching a rom's fs_name
  *  - adopt folders in install paths matching a rom's (sanitized) name
+ *
+ * All changes are applied to one in-memory list and written once at the end
+ * (each adopt/drop used to re-read and rewrite downloads.json).
  */
 export function syncPlatform(
   platformId: number,
   roms: { id: number; name: string; fsName: string }[]
 ): { added: number; removed: number } {
   const setup = platformSetup(platformId);
-  const records = loadRecords();
-  const recordedIds = new Set(records.filter((r) => r.platformId === platformId).map((r) => r.romId));
+  let records = loadRecords();
   let added = 0;
   let removed = 0;
 
   // Drop stale records
-  for (const record of records) {
-    if (record.platformId !== platformId) continue;
-    if (record.filePath && !fs.existsSync(record.filePath)) {
-      removeRecord(record.romId);
-      recordedIds.delete(record.romId);
-      removed++;
-    }
-  }
+  const before = records.length;
+  records = records.filter((r) => !(r.platformId === platformId && r.filePath && !fs.existsSync(r.filePath)));
+  removed = before - records.length;
+  const recordedIds = new Set(records.filter((r) => r.platformId === platformId).map((r) => r.romId));
 
   const byFsName = new Map<string, { id: number; name: string; fsName: string }>();
   const byCleanName = new Map<string, { id: number; name: string; fsName: string }>();
@@ -627,18 +660,19 @@ export function syncPlatform(
     if (rom.name) byCleanName.set(sanitizeForMatch(rom.name), rom);
   }
 
+  const adopt = (rom: { id: number; name: string }, fileName: string, filePath: string, size: number) => {
+    records.push({ romId: rom.id, romName: rom.name, fileName, filePath, platformId, size, downloadedAt: Date.now() });
+    recordedIds.add(rom.id);
+    added++;
+  };
+
   // Adopt loose files in the platform folder
   if (setup.folder && fs.existsSync(setup.folder)) {
     for (const item of fs.readdirSync(setup.folder)) {
       const rom = byFsName.get(item.toLowerCase());
       if (rom && !recordedIds.has(rom.id)) {
         const full = path.join(setup.folder, item);
-        upsertRecord({
-          romId: rom.id, romName: rom.name, fileName: item, filePath: full,
-          platformId, size: fs.statSync(full).size, downloadedAt: Date.now(),
-        });
-        recordedIds.add(rom.id);
-        added++;
+        adopt(rom, item, full, fs.statSync(full).size);
       }
     }
   }
@@ -647,19 +681,14 @@ export function syncPlatform(
   for (const installPath of setup.installPaths) {
     if (!installPath || !fs.existsSync(installPath)) continue;
     for (const item of fs.readdirSync(installPath)) {
+      if (STAGING_DIR_RE.test(item)) continue; // an in-progress or abandoned extraction
       const full = path.join(installPath, item);
       if (!fs.statSync(full).isDirectory()) continue;
       const rom = byCleanName.get(sanitizeForMatch(item));
-      if (rom && !recordedIds.has(rom.id)) {
-        upsertRecord({
-          romId: rom.id, romName: rom.name, fileName: item, filePath: full,
-          platformId, size: 0, downloadedAt: Date.now(),
-        });
-        recordedIds.add(rom.id);
-        added++;
-      }
+      if (rom && !recordedIds.has(rom.id)) adopt(rom, item, full, 0);
     }
   }
 
+  if (added || removed) saveRecords(records);
   return { added, removed };
 }

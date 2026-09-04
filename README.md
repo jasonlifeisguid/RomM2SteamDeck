@@ -83,8 +83,8 @@ Once set, the app launches quickly and exits cleanly. Exit it in Game Mode with 
 
 For Windows games (and any extracted game), open a downloaded game's **Add to Steam / Shortcut** dialog, pick the executable, and choose **Add to Steam**:
 
-- Writes Steam's `shortcuts.vdf` safely — it re-serializes your existing file byte-for-byte first and aborts if it can't reproduce it exactly, backs it up, and appends (never regenerates). This is the operation that historically wiped non-Steam libraries; here it can't.
-- On SteamOS with Steam running, it uses Valve's own `steam://addnonsteamgame` path so it works without closing Steam.
+- Writes Steam's `shortcuts.vdf` safely — it re-serializes your existing file byte-for-byte first and aborts if it can't reproduce it exactly, backs it up, and appends (never regenerates). This is the operation that historically wiped non-Steam libraries; here it can't. The parser/serializer is covered by `npm test`, including a byte-exact round trip of a real `shortcuts.vdf`.
+- On SteamOS with Steam running, it uses Valve's own `steam://addnonsteamgame` path so it works without closing Steam. With Steam closed, the file write is used instead (it can set the name, tags, and the Game Mode launch option).
 - Deleting a game from within the app also removes its Steam shortcut (when Steam is closed).
 
 ### Running Windows games on Steam Deck / Linux (Proton)
@@ -105,7 +105,7 @@ A couple of quirks to expect on SteamOS:
 ## Features
 
 - **Fast library browsing** — full library with pagination (no 500-game cap), stale-while-revalidate caching with delta sync, lazy-loaded cover art. Search, genre filter, and sort (name / date added / size / year / rating) with ascending/descending toggle, plus grid and list views.
-- **Downloads** — serial download queue with a progress bar, cancel, and streaming extract-while-downloading for zips; bundled 7-Zip for `.7z` (no system install needed).
+- **Downloads** — serial download queue with a progress bar, cancel, resume after interruptions, and streaming extract-while-downloading for zips; bundled 7-Zip for `.7z` (no system install needed). Every extracted game lands in its own folder under the install path, even when the archive has its files at the root.
 - **Multiple install paths** per platform, with a prompt to choose the location when more than one is configured.
 - **Add to Steam** (safe `shortcuts.vdf`) + desktop shortcuts (`.lnk` / `.desktop` / `.command`), set a default executable, and launch games directly.
 - **10 themes** including Steam Deck OLED orange.
@@ -122,6 +122,7 @@ git clone https://github.com/jasonlifeisguid/RomM2SteamDeck.git
 cd RomM2SteamDeck
 npm install
 npm start                 # run in dev
+npm test                  # unit + integration tests (VDF parser, extraction pipeline, helpers)
 
 npm run dist:win          # Windows: NSIS installer + portable exe
 npm run dist:linux        # Linux/Steam Deck: AppImage (build on Linux)
@@ -136,6 +137,7 @@ Output lands in `release/`. Windows and Linux can both be built from a Windows b
 src/           Electron main process (window, IPC, RomM client, config, downloads, Steam)
 renderer/      UI — plain HTML/CSS/JS, no framework
 scripts/       add-r2sd-to-steam.js — standalone "add R2SD to Steam" helper
+test/          node:test suites (run against the compiled dist/)
 build/         App icons + electron-builder afterPack hook
 ```
 

@@ -4,6 +4,11 @@
  * The RomM password is encrypted at rest with safeStorage, which uses
  * DPAPI on Windows, Keychain on macOS, and libsecret on Linux — an
  * upgrade over the plaintext SQLite storage in the Python version.
+ *
+ * The parsed config (and the decrypted password) is memoized in memory and
+ * invalidated on every write. Before this, each getPublicConfig() call
+ * re-read config.json and, on Windows, ran a DPAPI decrypt — and the download
+ * manager calls it several times per download (once per protected-root check).
  */
 import { app, safeStorage } from 'electron';
 import * as fs from 'fs';
@@ -48,11 +53,20 @@ const DEFAULTS: StoredConfig = {
   pinnedPlatforms: [], platforms: {}, basePath: '', stagingPath: '',
 };
 
+// Overridable so modules that read config can run under plain Node in tests.
+let userDataDirOverride: string | null = null;
+export function setUserDataDirForTests(dir: string | null): void { userDataDirOverride = dir; memo = null; }
+
 function configPath(): string {
-  return path.join(app.getPath('userData'), 'config.json');
+  return path.join(userDataDirOverride ?? app.getPath('userData'), 'config.json');
 }
 
-function readStored(): StoredConfig {
+// ── Memoized read ────────────────────────────────────────────────────────
+
+interface Loaded { stored: StoredConfig; password: string | null; }
+let memo: Loaded | null = null;
+
+function readStoredFromDisk(): StoredConfig {
   try {
     const raw = fs.readFileSync(configPath(), 'utf-8');
     return { ...DEFAULTS, ...JSON.parse(raw) };
@@ -61,9 +75,20 @@ function readStored(): StoredConfig {
   }
 }
 
+function load(): Loaded {
+  if (!memo) {
+    const stored = readStoredFromDisk();
+    memo = { stored, password: decryptStored(stored) };
+  }
+  return memo;
+}
+
 function writeStored(config: StoredConfig): void {
   fs.mkdirSync(path.dirname(configPath()), { recursive: true });
-  fs.writeFileSync(configPath(), JSON.stringify(config, null, 2), 'utf-8');
+  const file = configPath();
+  fs.writeFileSync(`${file}.tmp`, JSON.stringify(config, null, 2), 'utf-8');
+  fs.renameSync(`${file}.tmp`, file);
+  memo = null; // re-read (and re-decrypt) lazily on the next access
 }
 
 // ── Password storage ─────────────────────────────────────────────────────
@@ -120,13 +145,12 @@ function decryptStored(stored: StoredConfig): string | null {
 }
 
 export function getPublicConfig(): PublicConfig {
-  const stored = readStored();
-  const decrypted = decryptStored(stored);
+  const { stored, password } = load();
   return {
     baseUrl: stored.baseUrl,
     username: stored.username,
-    hasPassword: Boolean(decrypted),
-    passwordNeedsReentry: stored.passwordEncrypted.length > 0 && decrypted === null,
+    hasPassword: Boolean(password),
+    passwordNeedsReentry: stored.passwordEncrypted.length > 0 && password === null,
     theme: stored.theme,
     view: stored.view === 'list' ? 'list' : 'grid',
     pinnedPlatforms: Array.isArray(stored.pinnedPlatforms) ? stored.pinnedPlatforms : [],
@@ -137,13 +161,13 @@ export function getPublicConfig(): PublicConfig {
 }
 
 export function getCredentials(): { baseUrl: string; username: string; password: string } {
-  const stored = readStored();
-  return { baseUrl: stored.baseUrl, username: stored.username, password: decryptStored(stored) ?? '' };
+  const { stored, password } = load();
+  return { baseUrl: stored.baseUrl, username: stored.username, password: password ?? '' };
 }
 
 export function isConfigured(): boolean {
-  const stored = readStored();
-  return Boolean(stored.baseUrl && stored.username && decryptStored(stored));
+  const { stored, password } = load();
+  return Boolean(stored.baseUrl && stored.username && password);
 }
 
 export function setConfig(update: {
@@ -151,7 +175,8 @@ export function setConfig(update: {
   pinnedPlatforms?: number[]; platforms?: Record<string, PlatformSetup>;
   basePath?: string; stagingPath?: string;
 }): PublicConfig {
-  const stored = readStored();
+  // Copy before mutating so a failed write can't leave the memo half-updated.
+  const stored: StoredConfig = { ...load().stored };
   if (update.baseUrl !== undefined) stored.baseUrl = normalizeBaseUrl(update.baseUrl);
   if (update.username !== undefined) stored.username = update.username.trim();
   if (update.theme !== undefined) stored.theme = update.theme;

@@ -1,13 +1,14 @@
 {
   "name": "romm2steamdeck-app",
   "productName": "RomM2SteamDeck",
-  "version": "2.2.12",
+  "version": "2.2.13",
   "description": "Desktop client for browsing and downloading from a RomM library",
   "main": "dist/main.js",
   "author": "Jason Walters",
   "license": "MIT",
   "scripts": {
     "build": "tsc",
+    "test": "npm run build && node --test \"test/**/*.test.js\"",
     "start": "npm run build && electron .",
     "dist": "npm run build && electron-builder",
     "dist:win": "npm run build && electron-builder --win",

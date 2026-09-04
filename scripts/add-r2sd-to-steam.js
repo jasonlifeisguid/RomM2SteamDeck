@@ -106,12 +106,17 @@ function findSteamUsers(root) {
   return users.sort((a, b) => b.mtime - a.mtime);
 }
 
+// Exact process-name matches only. `pgrep -i steam` would also match this
+// script's own parent shell or the running R2SD app (romm2steamdeck-…), and
+// procps pgrep accepts a single pattern, so each name is checked separately.
 function isSteamRunning() {
-  try {
-    const out = execSync('pgrep -x steam steamwebhelper 2>/dev/null || pgrep -i steam 2>/dev/null || true',
-      { encoding: 'utf8', shell: '/bin/sh' });
-    return out.trim().length > 0;
-  } catch { return false; }
+  for (const name of ['steam', 'steamwebhelper', 'steam_osx']) {
+    try {
+      const out = execFileSync('pgrep', ['-x', name], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] });
+      if (out.trim()) return true;
+    } catch { /* exit 1 = no match */ }
+  }
+  return false;
 }
 
 function buildShortcutEntry(exePath, appName, iconPath) {

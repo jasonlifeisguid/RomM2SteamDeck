@@ -14,6 +14,8 @@ const state = {
   config: null,        // PublicConfig incl. platform setups
   platforms: [],
   roms: [],
+  romById: new Map(),   // romId -> rom (kept in sync with state.roms via setRoms)
+  cardEls: new Map(),   // romId -> rendered .game-card element (rebuilt by renderGrid)
   currentPlatformId: null,
   search: '',
   sort: 'name',
@@ -31,6 +33,16 @@ const state = {
 function queueStatusFor(romId) {
   const e = state.queue.find((q) => q.romId === romId);
   return e ? e.status : null;
+}
+
+/** Replace the rom list (and its id index) in one place. */
+function setRoms(roms) {
+  state.roms = roms;
+  state.romById = new Map(roms.map((r) => [r.id, r]));
+}
+function addRoms(roms) {
+  state.roms.push(...roms);
+  for (const r of roms) state.romById.set(r.id, r);
 }
 
 // Color themes — applied by setting CSS variables on :root (ported from the
@@ -109,10 +121,21 @@ function formatAge(fetchedAt) {
   return `${Math.round(hours / 24)} d ago`;
 }
 
+let lastFetchedAt = 0;
 function setCacheStatus(fromCache, fetchedAt) {
+  lastFetchedAt = fetchedAt;
   $('cache-status').textContent = fromCache
     ? `Cached ${formatAge(fetchedAt)} — refreshing…`
     : `Up to date`;
+}
+function setCacheRefreshFailed(error) {
+  const el = $('cache-status');
+  // Compact the common cases; the full message is in the tooltip.
+  const short = /401|403/.test(error) ? 'check your login in Settings'
+    : /fetch failed|ENOTFOUND|ECONNREFUSED|timed? ?out/i.test(error) ? 'server unreachable'
+    : 'refresh failed';
+  el.textContent = `Cached ${formatAge(lastFetchedAt)} — ${short}`;
+  el.title = error;
 }
 
 function toast(message, kind = '') {
@@ -143,8 +166,8 @@ function platformSetup(platformId) {
 
 async function setAssetSrc(img, romId, serverPath) {
   if (!serverPath) return;
-  const file = await window.r2sd.getAsset(romId, serverPath);
-  if (file) img.src = 'file:///' + file.replace(/\\/g, '/');
+  const url = await window.r2sd.getAsset(romId, serverPath); // r2sd-asset://covers/<file>
+  if (url) img.src = url;
 }
 
 async function reloadConfig() {
@@ -228,7 +251,12 @@ async function loadPlatforms(refresh = false) {
       if (first) selectPlatform(first.id);
     }
   } catch (err) {
-    $('platform-list').innerHTML = `<p class="error pad">Failed to load platforms.<br>${err.message || err}</p>`;
+    const list = $('platform-list');
+    list.innerHTML = '';
+    const msg = document.createElement('p');
+    msg.className = 'error pad';
+    msg.append('Failed to load platforms.', document.createElement('br'), String(err.message || err));
+    list.appendChild(msg);
   }
 }
 
@@ -243,25 +271,25 @@ function visibleRoms() {
   if (state.genre) {
     roms = roms.filter((r) => romGenres(r).includes(state.genre));
   }
-  const sorted = [...roms];
-  const byName = (a, b) => (a.name || a.fs_name || '').localeCompare(b.name || b.fs_name || '');
-  const createdTs = (r) => (r.created_at ? Date.parse(r.created_at) || 0 : 0);
-  // Ascending comparators per field; direction is applied uniformly on top.
-  const fieldCmp = {
-    name: byName,
-    added: (a, b) => createdTs(a) - createdTs(b),
-    size: (a, b) => (a.fs_size_bytes || 0) - (b.fs_size_bytes || 0),
-    year: (a, b) => (romYear(a) || 0) - (romYear(b) || 0),
-    rating: (a, b) => (romRating(a) || 0) - (romRating(b) || 0),
-  };
-  const base = fieldCmp[state.sort] || byName;
+  // Compute each rom's sort key once (Schwartzian transform) rather than
+  // inside the comparator — sorting 5,000 roms by year used to construct a
+  // Date object per comparison, ~60k times per keystroke.
+  const keyFn = {
+    name: () => 0,
+    added: (r) => (r.created_at ? Date.parse(r.created_at) || 0 : 0),
+    size: (r) => r.fs_size_bytes || 0,
+    year: (r) => romYear(r) || 0,
+    rating: (r) => romRating(r) || 0,
+  }[state.sort] || (() => 0);
   const dir = state.sortDir === 'desc' ? -1 : 1;
-  sorted.sort((a, b) => {
-    const c = base(a, b) * dir;
-    return c !== 0 ? c : byName(a, b); // stable A-Z tiebreak
+  const keyed = roms.map((r) => ({ r, k: keyFn(r), n: r.name || r.fs_name || '' }));
+  keyed.sort((a, b) => {
+    const c = (a.k - b.k) * dir;
+    return c !== 0 ? c : (state.sort === 'name' ? dir : 1) * NAME_COLLATOR.compare(a.n, b.n);
   });
-  return sorted;
+  return keyed.map((x) => x.r);
 }
+const NAME_COLLATOR = new Intl.Collator();
 
 // ── Custom dropdown ─────────────────────────────────────
 // Native <select> popups aren't composited by gamescope (Steam Deck Game Mode),
@@ -341,7 +369,7 @@ const coverObserver = new IntersectionObserver(
 );
 
 function coverWrapFor(romId) {
-  return document.querySelector(`.cover-wrap[data-rom-id="${romId}"]`);
+  return cardFor(romId)?.querySelector('.cover-wrap') || null;
 }
 
 /** Add/update/remove the progress bar overlay on a game card. */
@@ -395,7 +423,7 @@ function updateCardBadge(romId) {
   const wrap = coverWrapFor(romId);
   if (!wrap) return;
   wrap.querySelector('.dl-badge')?.remove();
-  const rom = state.roms.find((r) => r.id === romId);
+  const rom = state.romById.get(romId);
   if (rom) { const b = makeBadge(rom); if (b) wrap.appendChild(b); }
   // Keep the list-view "Installed" label in sync
   const statusEl = cardFor(romId)?.querySelector('.list-status');
@@ -403,7 +431,7 @@ function updateCardBadge(romId) {
 }
 
 function cardFor(romId) {
-  return document.querySelector(`.game-card[data-rom-id="${romId}"]`);
+  return state.cardEls.get(romId) || null;
 }
 
 /** Build (or rebuild) the state-driven quick-action button for one rom. */
@@ -433,7 +461,7 @@ function buildCardActions(rom) {
 function updateCardActions(romId) {
   const card = cardFor(romId);
   if (!card) return;
-  const rom = state.roms.find((r) => r.id === romId);
+  const rom = state.romById.get(romId);
   if (!rom) return;
   card.querySelector('.card-actions')?.remove();
   card.appendChild(buildCardActions(rom));
@@ -528,10 +556,64 @@ document.addEventListener('click', hideContextMenu);
 document.addEventListener('scroll', hideContextMenu, true);
 window.addEventListener('blur', hideContextMenu);
 
+function buildCard(rom) {
+  const card = document.createElement('div');
+  card.className = 'game-card';
+  card.dataset.romId = rom.id;
+  card.title = rom.fs_name || rom.name || '';
+  card.addEventListener('click', () => openDetail(rom));
+  card.addEventListener('contextmenu', (e) => showContextMenu(e, rom));
+
+  const wrap = document.createElement('div');
+  wrap.className = 'cover-wrap';
+  wrap.dataset.romId = rom.id;
+  wrap.dataset.coverPath = rom.path_cover_large || rom.path_cover_small || '';
+  const img = document.createElement('img');
+  img.className = 'game-cover';
+  img.alt = '';
+  wrap.appendChild(img);
+  coverObserver.observe(wrap);
+
+  const badge = makeBadge(rom);
+  if (badge) wrap.appendChild(badge);
+
+  const meta = document.createElement('div');
+  meta.className = 'game-meta';
+  const name = document.createElement('div');
+  name.className = 'game-name';
+  name.textContent = rom.name || rom.fs_name || 'Unknown';
+  const size = document.createElement('div');
+  size.className = 'game-size';
+  const year = romYear(rom);
+  size.textContent = [formatSize(rom.fs_size_bytes), year].filter(Boolean).join(' · ');
+  // Genres line — only rendered visibly in list view (CSS-gated)
+  const genresLine = document.createElement('div');
+  genresLine.className = 'game-genres';
+  genresLine.textContent = romGenres(rom).slice(0, 4).join(' · ');
+  meta.append(name, size, genresLine);
+
+  // Right-hand columns for list view: rating + installed status
+  const listCols = document.createElement('div');
+  listCols.className = 'list-cols';
+  const ratingEl = document.createElement('span');
+  ratingEl.className = 'list-rating';
+  const rating = romRating(rom);
+  if (rating) ratingEl.textContent = `★ ${Math.round(rating)}`;
+  const statusEl = document.createElement('span');
+  statusEl.className = 'list-status';
+  if (state.downloads.has(rom.id)) statusEl.textContent = 'Installed';
+  listCols.append(ratingEl, statusEl);
+
+  card.append(wrap, meta, listCols, buildCardActions(rom));
+  state.cardEls.set(rom.id, card);
+  return card;
+}
+
 function renderGrid() {
   const grid = $('game-grid');
   coverObserver.disconnect();
   grid.innerHTML = '';
+  state.cardEls = new Map();
 
   const roms = visibleRoms();
   $('grid-status').hidden = roms.length > 0;
@@ -540,57 +622,7 @@ function renderGrid() {
     : 'No games on this platform.';
 
   const frag = document.createDocumentFragment();
-  for (const rom of roms) {
-    const card = document.createElement('div');
-    card.className = 'game-card';
-    card.dataset.romId = rom.id;
-    card.title = rom.fs_name || rom.name || '';
-    card.addEventListener('click', () => openDetail(rom));
-    card.addEventListener('contextmenu', (e) => showContextMenu(e, rom));
-
-    const wrap = document.createElement('div');
-    wrap.className = 'cover-wrap';
-    wrap.dataset.romId = rom.id;
-    wrap.dataset.coverPath = rom.path_cover_large || rom.path_cover_small || '';
-    const img = document.createElement('img');
-    img.className = 'game-cover';
-    img.alt = '';
-    wrap.appendChild(img);
-    coverObserver.observe(wrap);
-
-    const badge = makeBadge(rom);
-    if (badge) wrap.appendChild(badge);
-
-    const meta = document.createElement('div');
-    meta.className = 'game-meta';
-    const name = document.createElement('div');
-    name.className = 'game-name';
-    name.textContent = rom.name || rom.fs_name || 'Unknown';
-    const size = document.createElement('div');
-    size.className = 'game-size';
-    const year = romYear(rom);
-    size.textContent = [formatSize(rom.fs_size_bytes), year].filter(Boolean).join(' · ');
-    // Genres line — only rendered visibly in list view (CSS-gated)
-    const genresLine = document.createElement('div');
-    genresLine.className = 'game-genres';
-    genresLine.textContent = romGenres(rom).slice(0, 4).join(' · ');
-    meta.append(name, size, genresLine);
-
-    // Right-hand columns for list view: rating + installed status
-    const listCols = document.createElement('div');
-    listCols.className = 'list-cols';
-    const ratingEl = document.createElement('span');
-    ratingEl.className = 'list-rating';
-    const rating = romRating(rom);
-    if (rating) ratingEl.textContent = `★ ${Math.round(rating)}`;
-    const statusEl = document.createElement('span');
-    statusEl.className = 'list-status';
-    if (state.downloads.has(rom.id)) statusEl.textContent = 'Installed';
-    listCols.append(ratingEl, statusEl);
-
-    card.append(wrap, meta, listCols, buildCardActions(rom));
-    frag.appendChild(card);
-  }
+  for (const rom of roms) frag.appendChild(buildCard(rom));
   grid.appendChild(frag);
 
   // Restore progress / queued overlays after a re-render
@@ -599,6 +631,20 @@ function renderGrid() {
 
   // Re-apply the gamepad focus ring after a re-render
   if (gp.active && gp.index >= 0) gpSetFocus(gp.index);
+}
+
+/** Cold-load fast path: pages arrive from the server already sorted by name,
+ *  so while the view is in its default state (no search/genre filter, name
+ *  ascending) a new page can be appended instead of rebuilding every card. */
+function canAppendPages() {
+  return !state.search && !state.genre && state.sort === 'name' && state.sortDir === 'asc';
+}
+function appendCards(roms) {
+  const grid = $('game-grid');
+  const frag = document.createDocumentFragment();
+  for (const rom of roms) frag.appendChild(buildCard(rom));
+  grid.appendChild(frag);
+  $('grid-status').hidden = state.roms.length > 0;
 }
 
 async function selectPlatform(platformId, refresh = false) {
@@ -610,23 +656,26 @@ async function selectPlatform(platformId, refresh = false) {
   $('grid-status').hidden = false;
   $('grid-status').textContent = 'Loading…';
   $('game-grid').innerHTML = '';
-  state.roms = [];
+  state.cardEls = new Map();
+  setRoms([]);
 
   try {
     const result = await window.r2sd.getRoms(platformId, { refresh });
     if (state.currentPlatformId !== platformId) return;
-    state.roms = result.roms;
+    setRoms(result.roms);
+    // Reconcile download records with what's on disk BEFORE rendering, so the
+    // cards are built with the right badges in one pass. (Rendering first and
+    // then patching every card was O(n²) on a 5,000-game platform: a DOM query
+    // plus an array scan per rom.)
+    const changes = await window.r2sd.syncDownloads(platformId);
+    await reloadDownloads();
+    if (state.currentPlatformId !== platformId) return;
     setCacheStatus(result.fromCache, result.fetchedAt);
     updateGenreFilter();
     renderGrid();
-
-    // Reconcile download records with what's actually on disk
-    const changes = await window.r2sd.syncDownloads(platformId);
-    await reloadDownloads();
     if (changes.added || changes.removed) {
       toast(`Library sync: ${changes.added} adopted, ${changes.removed} removed`);
     }
-    for (const rom of state.roms) updateCardBadge(rom.id);
   } catch (err) {
     $('grid-status').textContent = `Failed to load games: ${err.message || err}`;
   }
@@ -635,14 +684,20 @@ async function selectPlatform(platformId, refresh = false) {
 // Progressive pages during a cold (uncached) load → render as they arrive
 window.r2sd.onRomsProgress(({ platformId, page, loaded, total }) => {
   if (platformId !== state.currentPlatformId) return;
-  state.roms.push(...page);
+  addRoms(page);
   updateGenreFilter();
-  renderGrid();
+  if (canAppendPages()) appendCards(page);
+  else renderGrid();
   $('grid-status').hidden = false;
   $('grid-status').textContent = loaded < total
     ? `Loading library from server (first time only)… ${loaded} / ${total}`
     : '';
   if (loaded >= total) $('grid-status').hidden = true;
+});
+
+window.r2sd.onRefreshFailed(({ platformId, error }) => {
+  if (platformId !== undefined && platformId !== state.currentPlatformId) return;
+  setCacheRefreshFailed(error || 'refresh failed');
 });
 
 window.r2sd.onPlatformsUpdated(({ data, fetchedAt }) => {
@@ -653,7 +708,7 @@ window.r2sd.onPlatformsUpdated(({ data, fetchedAt }) => {
 
 window.r2sd.onRomsUpdated(({ platformId, data, fetchedAt }) => {
   if (platformId !== state.currentPlatformId) return;
-  state.roms = data;
+  setRoms(data);
   setCacheStatus(false, fetchedAt);
   updateGenreFilter();
   renderGrid();
@@ -668,7 +723,7 @@ window.r2sd.onDownloadEvent(async (event) => {
   if (terminal) {
     state.progress.delete(romId);
     await reloadDownloads();
-    const rom = state.roms.find((r) => r.id === romId);
+    const rom = state.romById.get(romId);
     const name = rom?.name || `ROM ${romId}`;
     if (status === 'complete') toast(`${name} downloaded`, 'success');
     if (status === 'extracted') toast(`${name} downloaded and installed`, 'success');
@@ -972,7 +1027,7 @@ function closeExePicker() {
 
 async function createShortcut() {
   if (!exeSelected || !exePickerRom) return;
-  const res = await window.r2sd.createShortcut(exeSelected.path, exePickerRom.name || exePickerRom.fs_name);
+  const res = await window.r2sd.createShortcut(exePickerRom.id, exeSelected.path, exePickerRom.name || exePickerRom.fs_name);
   closeExePicker();
   if (res.error) toast(res.error, 'error');
   else toast('Desktop shortcut created', 'success');
@@ -1016,8 +1071,8 @@ async function playGame(rom) {
 async function addToSteam() {
   if (!exeSelected || !exePickerRom) return;
   const proton = !$('exe-proton-check').hidden && $('exe-proton').checked;
-  const cover = { romId: exePickerRom.id, serverPath: exePickerRom.path_cover_large || exePickerRom.path_cover_small || '' };
-  const res = await window.r2sd.addToSteam(exeSelected.path, exePickerRom.name || exePickerRom.fs_name, proton, cover);
+  const coverPath = exePickerRom.path_cover_large || exePickerRom.path_cover_small || '';
+  const res = await window.r2sd.addToSteam(exePickerRom.id, exeSelected.path, exePickerRom.name || exePickerRom.fs_name, proton, coverPath);
   if (res.error) {
     // Keep the picker open (e.g. Steam is running → user needs to quit it first)
     toast(res.error, 'error');
@@ -1258,7 +1313,12 @@ async function saveSettings() {
 
 // ── Gamepad navigation (Steam Deck / controllers) ───────
 
-const gp = { index: -1, raf: null, prev: {}, lastMove: 0, active: false };
+// Polled on a fixed 50 ms timer, not requestAnimationFrame: with
+// backgroundThrottling off, a rAF loop kept the renderer busy every frame for
+// as long as a controller was connected (always, on the Deck). 20 Hz is
+// indistinguishable for menu navigation.
+const GP_POLL_MS = 50;
+const gp = { index: -1, timer: null, prev: {}, lastMove: 0, active: false };
 
 function gpCards() {
   return [...document.querySelectorAll('#game-grid .game-card')];
@@ -1343,18 +1403,17 @@ function gpPoll() {
     if (b && !gp.prev.b && anyModalOpen()) gpBack();
     gp.prev = { a, b };
   }
-  gp.raf = requestAnimationFrame(gpPoll);
 }
 
 function gpStart() {
-  if (gp.raf) return;
+  if (gp.timer) return;
   gp.active = true;
-  gpPoll();
+  gp.timer = setInterval(gpPoll, GP_POLL_MS);
 }
 function gpStop() {
   if ([...navigator.getGamepads()].some((p) => p)) return;
-  cancelAnimationFrame(gp.raf);
-  gp.raf = null;
+  clearInterval(gp.timer);
+  gp.timer = null;
   gp.active = false;
 }
 
@@ -1407,9 +1466,13 @@ $('btn-refresh').addEventListener('click', () => {
 // Header Exit — shown on Linux, where Game Mode has no window chrome to close.
 $('btn-exit').addEventListener('click', () => window.r2sd.quitApp());
 window.r2sd.getPlatform().then((p) => { if (p === 'linux') $('btn-exit').hidden = false; });
+// Debounced: each keystroke used to rebuild every card immediately, so typing
+// a 5-letter word on a 5,000-game platform meant five full grid rebuilds.
+let searchTimer = null;
 $('search').addEventListener('input', (e) => {
   state.search = e.target.value;
-  renderGrid();
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(renderGrid, 120);
 });
 // Sensible default direction when a sort field is chosen
 const SORT_DEFAULT_DIR = { name: 'asc', added: 'desc', size: 'desc', year: 'desc', rating: 'desc' };

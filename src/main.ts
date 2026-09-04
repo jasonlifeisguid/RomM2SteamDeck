@@ -1,14 +1,25 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { RommClient, RommPlatform, RommRom } from './romm';
+import { pathToFileURL } from 'url';
+import { RommClient, RommPlatform, RommRom, slimRom } from './romm';
 import * as config from './config';
 import * as cache from './cache';
 import * as downloads from './downloads';
 import * as shortcuts from './shortcuts';
 import * as steam from './steam';
 import * as steamclient from './steamclient';
+import { isInsideFolder } from './fsutil';
+
+// Cover art and screenshots are served to the renderer over a private scheme
+// that maps only onto the covers cache directory, so the renderer's CSP no
+// longer needs to allow file: images (which would let any local path render
+// if a path ever leaked into an <img src>). Must be registered before ready.
+const ASSET_SCHEME = 'r2sd-asset';
+protocol.registerSchemesAsPrivileged([
+  { scheme: ASSET_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: false } },
+]);
 
 // Steam Deck / Linux rendering. The black window on SteamOS/Plasma was caused
 // by two flags that were originally added as "safe" defaults but actively broke
@@ -108,24 +119,77 @@ async function configureShortcutLive(
   return out;
 }
 
-/** Cover art bytes as base64 for a rom (from cache or the server), for pushing
- *  to Steam as the shortcut's capsule artwork. Returns null if unavailable. */
-async function fetchCoverBase64(romId: number, serverPath: string): Promise<{ base64: string; imageType: string } | null> {
-  if (!serverPath) return null;
+// ── Server-hosted images (covers, screenshots) ────────────────────────────
+// Fetched on first request and cached as files. Network fetches are capped:
+// RomM serves requests serially, and a fast scroll otherwise fires one request
+// per tile that passed by, so the covers actually on screen would wait behind
+// the ones scrolled past. FIFO, so first-visible is fetched first.
+const ASSET_FETCH_CONCURRENCY = 4;
+let assetFetchesActive = 0;
+const assetFetchWaiters: (() => void)[] = [];
+
+async function withAssetSlot<T>(fn: () => Promise<T>): Promise<T> {
+  if (assetFetchesActive >= ASSET_FETCH_CONCURRENCY) {
+    await new Promise<void>((resolve) => assetFetchWaiters.push(resolve));
+  }
+  assetFetchesActive++;
   try {
-    const file = cache.assetCachePath(romId, serverPath);
-    let data: Buffer | null = fs.existsSync(file) ? fs.readFileSync(file) : null;
-    if (!data) {
-      data = await getClient().getBinary(serverPath);
-      if (data) { fs.mkdirSync(cache.coversDir(), { recursive: true }); fs.writeFileSync(file, data); }
-    }
-    if (!data || !data.length) return null;
+    return await fn();
+  } finally {
+    assetFetchesActive--;
+    assetFetchWaiters.shift()?.();
+  }
+}
+
+/** Local cache file for a rom image, fetching from the server on a miss.
+ *  Returns the file path, or null if unavailable. */
+async function ensureAsset(romId: number, serverPath: string): Promise<string | null> {
+  if (!serverPath) return null;
+  const file = cache.assetCachePath(romId, serverPath);
+  if (fs.existsSync(file)) return file;
+  const data = await withAssetSlot(() => getClient().getBinary(serverPath));
+  if (!data || !data.length) return null;
+  fs.mkdirSync(cache.coversDir(), { recursive: true });
+  fs.writeFileSync(file, data);
+  return file;
+}
+
+/** Cover art bytes as base64 for a rom, for pushing to Steam as the shortcut's
+ *  capsule artwork. Returns null if unavailable. */
+async function fetchCoverBase64(romId: number, serverPath: string): Promise<{ base64: string; imageType: string } | null> {
+  try {
+    const file = await ensureAsset(romId, serverPath);
+    if (!file) return null;
+    const data = fs.readFileSync(file);
+    if (!data.length) return null;
     const imageType = data[0] === 0x89 && data[1] === 0x50 ? 'png' : 'jpg'; // PNG magic vs JPEG
     return { base64: data.toString('base64'), imageType };
   } catch {
     return null;
   }
 }
+
+/**
+ * Resolve an executable path the renderer handed us against the rom's tracked
+ * install location: the exe must live inside the game's folder (or be the
+ * tracked file itself). Anything else — a path outside every game folder, or
+ * a rom that isn't installed — is refused, so a misbehaving renderer can't
+ * launch or register arbitrary programs.
+ */
+function exeForRom(romId: number, exePath: string): string | null {
+  if (!exePath || typeof exePath !== 'string' || !Number.isInteger(romId)) return null;
+  const rec = downloads.findDownload(romId);
+  if (!rec || !rec.filePath) return null;
+  const resolved = path.resolve(exePath);
+  const root = path.resolve(rec.filePath);
+  let inside = false;
+  try {
+    inside = fs.statSync(root).isDirectory() ? isInsideFolder(root, resolved) : resolved === root;
+  } catch { return null; }
+  return inside && fs.existsSync(resolved) ? resolved : null;
+}
+
+const EXE_OUTSIDE_GAME = 'Executable is not inside this game\'s install folder';
 
 /** One-time untangle of the shared %APPDATA%\romm2steamdeck directory. */
 function migrateLegacyUserData(): void {
@@ -202,11 +266,18 @@ async function refreshPlatforms(): Promise<RommPlatform[]> {
   return platforms;
 }
 
-/** Full fetch with progressive page events so a long cold load renders as it arrives. */
-async function refreshRoms(platformId: number): Promise<RommRom[]> {
-  const roms = await getClient().getRomsByPlatform(platformId, (page, loaded, total) => {
-    send('library:roms-progress', { platformId, page, loaded, total });
-  });
+/**
+ * Full fetch. With `reportProgress`, each page is streamed to the renderer so
+ * a long cold load renders as it arrives. Only the no-cache path asks for
+ * that: a background resync (delta sync hit a count mismatch) must stay
+ * silent, because the renderer appends progress pages onto whatever it is
+ * showing — with a cached list already on screen that produced every game
+ * twice until the final roms-updated event replaced the list.
+ */
+async function refreshRoms(platformId: number, reportProgress = false): Promise<RommRom[]> {
+  const roms = await getClient().getRomsByPlatform(platformId, reportProgress
+    ? (page, loaded, total) => send('library:roms-progress', { platformId, page, loaded, total })
+    : undefined);
   cache.writeCache(`roms-${platformId}`, roms);
   return roms;
 }
@@ -223,7 +294,9 @@ async function deltaRefreshRoms(platformId: number, cached: cache.CacheEntry<Rom
   const since = new Date(cached.fetchedAt - 60_000);
   const updated = await client.getRomsUpdatedAfter(platformId, since);
 
-  const byId = new Map(cached.data.map((r) => [r.id, r]));
+  // slimRom is idempotent — this also shrinks caches written before trimming existed.
+  const byId = new Map<number, RommRom>();
+  for (const r of cached.data) { const slim = slimRom(r as unknown as Record<string, unknown>); byId.set(slim.id, slim); }
   for (const rom of updated) byId.set(rom.id, rom);
   const merged = [...byId.values()].sort((a, b) => (a.name || a.fs_name || '').localeCompare(b.name || b.fs_name || ''));
 
@@ -243,7 +316,11 @@ function backgroundRefresh(key: string, refresh: () => Promise<unknown>, event: 
   inFlight.add(key);
   refresh()
     .then((data) => send(event, { ...payload, data, fetchedAt: Date.now() }))
-    .catch((err) => console.error(`Background refresh ${key} failed:`, err))
+    .catch((err) => {
+      console.error(`Background refresh ${key} failed:`, err);
+      // Tell the renderer, or the sidebar sits on "refreshing…" indefinitely.
+      send('library:refresh-failed', { ...payload, key, error: err instanceof Error ? err.message : String(err) });
+    })
     .finally(() => inFlight.delete(key));
 }
 
@@ -286,7 +363,7 @@ function registerIpc(): void {
       return { roms, fromCache: false, fetchedAt: Date.now() };
     }
     // No cache yet: full fetch (progress streamed to the renderer per page)
-    const roms = await refreshRoms(platformId);
+    const roms = await refreshRoms(platformId, true);
     return { roms, fromCache: false, fetchedAt: Date.now() };
   });
 
@@ -317,13 +394,13 @@ function registerIpc(): void {
 
   ipcMain.handle('download:cancel', (_e, romId: number) => downloads.cancelDownload(romId));
 
-  ipcMain.handle('download:delete', (_e, romId: number) => {
+  ipcMain.handle('download:delete', async (_e, romId: number) => {
     // Capture the install folder before the record is removed, so we can also
     // clean up any Steam shortcut that pointed into it.
-    const rec = downloads.listDownloads().find((r) => r.romId === romId);
+    const rec = downloads.findDownload(romId);
     const result = downloads.deleteDownload(romId);
     if (result.error || !rec || !rec.filePath) return result;
-    const steamRes = steam.removeNonSteamGamesUnder(rec.filePath);
+    const steamRes = await steam.removeNonSteamGamesUnder(rec.filePath);
     return { ...result, steamRemoved: steamRes.removed, steamSkipped: !!steamRes.skippedSteamRunning };
   });
 
@@ -339,44 +416,59 @@ function registerIpc(): void {
 
   // Desktop shortcuts for extracted PC games
   ipcMain.handle('game:listExes', (_e, romId: number) => {
-    const record = downloads.listDownloads().find((r) => r.romId === romId);
+    const record = downloads.findDownload(romId);
     if (!record || !record.filePath) return [];
     return shortcuts.listExes(record.filePath);
   });
-  ipcMain.handle('shortcut:create', (_e, exePath: string, gameName: string) =>
-    shortcuts.createShortcut(exePath, gameName)
-  );
+  ipcMain.handle('shortcut:create', (_e, romId: number, exePath: string, gameName: string) => {
+    const exe = exeForRom(romId, exePath);
+    if (!exe) return { error: EXE_OUTSIDE_GAME };
+    return shortcuts.createShortcut(exe, gameName);
+  });
 
   // Set a game's default exe and launch it
-  ipcMain.handle('game:setDefaultExe', (_e, romId: number, exePath: string) =>
-    downloads.setDefaultExe(romId, exePath)
-  );
+  ipcMain.handle('game:setDefaultExe', (_e, romId: number, exePath: string) => {
+    const exe = exeForRom(romId, exePath);
+    return exe ? downloads.setDefaultExe(romId, exe) : false;
+  });
   ipcMain.handle('game:launch', (_e, romId: number, exePath?: string) => {
-    if (exePath) downloads.setDefaultExe(romId, exePath);
-    const rec = downloads.listDownloads().find((r) => r.romId === romId);
+    if (exePath) {
+      const exe = exeForRom(romId, exePath);
+      if (!exe) return { ok: false, error: EXE_OUTSIDE_GAME };
+      downloads.setDefaultExe(romId, exe);
+    }
+    const rec = downloads.findDownload(romId);
     const target = exePath || rec?.defaultExe;
     if (!target) return { ok: false, error: 'No executable selected for this game yet' };
     return shortcuts.launchGame(target);
   });
 
   // Add to Steam (safe shortcuts.vdf writing)
-  ipcMain.handle('steam:status', async () => ({
-    found: steam.findSteamRoot() !== null,
-    running: steam.isSteamRunning(),
-    users: steam.findSteamUsers().length,
-    canAddLive: steam.canAddLive(),
-    // Can we drive SteamClient live (set launch options / Proton) — i.e. is the
-    // CEF debugger reachable (Decky-enabled)?
-    canEditLive: await steamclient.isAvailable(),
-  }));
-  ipcMain.handle('steam:add', async (_e, exePath: string, appName: string, proton?: boolean, cover?: { romId: number; serverPath: string }) => {
-    const res = steam.addNonSteamGameSmart(exePath, appName, { tags: ['RomM'] });
+  ipcMain.handle('steam:status', async () => {
+    const [running, canEditLive] = await Promise.all([
+      steam.isSteamRunning(),
+      // Can we drive SteamClient live (set launch options / Proton) — i.e. is the
+      // CEF debugger reachable (Decky-enabled)?
+      steamclient.isAvailable(),
+    ]);
+    return {
+      found: steam.findSteamRoot() !== null,
+      running,
+      users: steam.findSteamUsers().length,
+      canAddLive: steam.canAddLive(),
+      canEditLive,
+    };
+  });
+  ipcMain.handle('steam:add', async (_e, romId: number, exePath: string, appName: string, proton?: boolean, coverPath?: string) => {
+    const exe = exeForRom(romId, exePath);
+    if (!exe) return { ok: false, error: EXE_OUTSIDE_GAME };
+    const res = await steam.addNonSteamGameSmart(exe, appName, { tags: ['RomM'] });
     // Live-configure via SteamClient (Decky/CEF): real game name (the live add
     // names it after the .exe), optional Proton, and the RomM cover art as the
     // library capsule. Falls back to the manual tips when the bridge is absent.
     if (res.ok && process.platform === 'linux') {
-      const artwork = cover?.serverPath ? await fetchCoverBase64(cover.romId, cover.serverPath) : null;
-      const live = await configureShortcutLive(exePath, {
+      const artwork = coverPath ? await fetchCoverBase64(romId, coverPath) : null;
+      const live = await configureShortcutLive(exe, {
         name: appName,
         compatTool: proton ? 'proton_experimental' : undefined,
         artwork: artwork || undefined,
@@ -391,7 +483,7 @@ function registerIpc(): void {
     if (!self) {
       return { ok: false, error: 'This works from the packaged app (installed .exe / AppImage / .app), not a dev run.' };
     }
-    const res = steam.addNonSteamGameSmart(self, 'RomM2SteamDeck', { tags: ['RomM'] });
+    const res = await steam.addNonSteamGameSmart(self, 'RomM2SteamDeck', { tags: ['RomM'] });
     // Live-configure via SteamClient: a clean name + the overlay-strip Launch
     // Option (so it sticks in Game Mode / across Cloud — no restart, no revert).
     if (res.ok && process.platform === 'linux') {
@@ -411,17 +503,27 @@ function registerIpc(): void {
     return downloads.syncPlatform(platformId, roms);
   });
 
-  // Server-hosted images (covers, screenshots): returns a local file path,
-  // fetching + caching on first request
+  // Server-hosted images (covers, screenshots): returns a URL on the private
+  // asset scheme, fetching + caching on first request
   ipcMain.handle('asset:get', async (_e, romId: number, serverPath: string) => {
-    if (!serverPath) return null;
-    const file = cache.assetCachePath(romId, serverPath);
-    if (fs.existsSync(file)) return file;
-    const data = await getClient().getBinary(serverPath);
-    if (!data) return null;
-    fs.mkdirSync(cache.coversDir(), { recursive: true });
-    fs.writeFileSync(file, data);
-    return file;
+    if (typeof serverPath !== 'string' || !serverPath) return null;
+    const file = await ensureAsset(romId, serverPath);
+    return file ? `${ASSET_SCHEME}://covers/${encodeURIComponent(path.basename(file))}` : null;
+  });
+}
+
+/** r2sd-asset://covers/<file> → the covers cache directory, nothing else. */
+function registerAssetProtocol(): void {
+  protocol.handle(ASSET_SCHEME, (request) => {
+    const url = new URL(request.url);
+    const name = decodeURIComponent(url.pathname.replace(/^\/+/, ''));
+    // One plain filename: no separators, no traversal.
+    if (url.hostname !== 'covers' || !/^[\w.-]+$/.test(name) || name.includes('..')) {
+      return new Response('', { status: 404 });
+    }
+    const file = path.join(cache.coversDir(), name);
+    if (!fs.existsSync(file)) return new Response('', { status: 404 });
+    return net.fetch(pathToFileURL(file).toString());
   });
 }
 
@@ -445,6 +547,11 @@ function createWindow(): void {
       backgroundThrottling: false,
     },
   });
+  // The renderer is a local, single-page UI: never let it navigate away or
+  // open windows, whatever ends up in a rendered string.
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (e) => e.preventDefault());
+
   mainWindow.loadFile(path.join(__dirname, '..', 'renderer', 'index.html'));
 
   mainWindow.once('ready-to-show', () => mainWindow?.show());
@@ -517,6 +624,7 @@ if (!app.requestSingleInstanceLock()) {
   });
 
   app.whenReady().then(() => {
+    registerAssetProtocol();
     registerIpc();
 
     // Automated smoke test: verify startup then exit

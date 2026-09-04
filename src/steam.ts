@@ -13,10 +13,14 @@
  *
  * No electron imports — unit-testable standalone.
  */
-import { execSync, execFileSync } from 'child_process';
+import { execFile, execFileSync, execSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import { promisify } from 'util';
+import { isInsideFolder } from './fsutil';
+
+const execFileP = promisify(execFile);
 
 type VdfValue = string | number | VdfMap;
 interface VdfMap { [key: string]: VdfValue; }
@@ -131,20 +135,37 @@ export function findSteamUsers(root = findSteamRoot()): SteamUser[] {
   return users.sort((a, b) => b.mtime - a.mtime);
 }
 
-export function isSteamRunning(): boolean {
+/**
+ * Is the Steam client running? Async so the main process never blocks on a
+ * child process (this is called from UI-driven IPC handlers).
+ *
+ * Linux/macOS: exact-name matches only. The previous check fell through to
+ * `pgrep -i steam`, which matches ANY process whose name contains "steam" —
+ * including this app's own process (`romm2steamdeck-…`) — so it reported Steam
+ * as running whenever R2SD itself was running, which made the file-write path
+ * unreachable on the Deck. (procps `pgrep` also accepts only one pattern, so the
+ * old `pgrep -x steam steamwebhelper` form errored out and never matched.)
+ */
+export async function isSteamRunning(): Promise<boolean> {
   try {
     if (process.platform === 'win32') {
-      const out = execSync('tasklist /FI "IMAGENAME eq steam.exe" /NH', { encoding: 'utf8' });
-      return /steam\.exe/i.test(out);
+      const { stdout } = await execFileP('tasklist', ['/FI', 'IMAGENAME eq steam.exe', '/NH'], { encoding: 'utf8', windowsHide: true });
+      return /steam\.exe/i.test(stdout);
     }
-    const out = execSync('pgrep -x steam steamwebhelper 2>/dev/null || pgrep -i steam 2>/dev/null || true', {
-      encoding: 'utf8', shell: '/bin/sh',
-    });
-    return out.trim().length > 0;
+    for (const name of STEAM_PROCESS_NAMES) {
+      try {
+        const { stdout } = await execFileP('pgrep', ['-x', name], { encoding: 'utf8' });
+        if (stdout.trim()) return true;
+      } catch { /* pgrep exits 1 when nothing matched */ }
+    }
+    return false;
   } catch {
     return false;
   }
 }
+
+// Exact process names (Linux comm is truncated to 15 chars; all of these fit).
+const STEAM_PROCESS_NAMES = ['steam', 'steamwebhelper', 'steam_osx'];
 
 // ── Add non-Steam game ──────────────────────────────────────────────────
 
@@ -199,9 +220,9 @@ export function buildShortcutEntry(exePath: string, appName: string, opts: { sta
   };
 }
 
-export function addNonSteamGame(exePath: string, appName: string, opts: { startDir?: string; tags?: string[] } = {}): AddResult {
+export async function addNonSteamGame(exePath: string, appName: string, opts: { startDir?: string; tags?: string[] } = {}): Promise<AddResult> {
   if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
-  if (isSteamRunning()) {
+  if (await isSteamRunning()) {
     return { ok: false, error: 'Steam is running. Fully exit Steam (right-click the tray icon → Exit), then try again — Steam overwrites shortcuts on exit.' };
   }
 
@@ -302,13 +323,20 @@ export function addNonSteamGame(exePath: string, appName: string, opts: { startD
 // Steam names the entry after the file. Artwork/renaming is done in Steam
 // afterwards (e.g. Decky + SteamGridDB).
 
+// Memoized: these binaries don't move while the app runs, and the lookup is a
+// synchronous shell-out that steam:status used to repeat on every call.
+const commandPathMemo = new Map<string, string | null>();
 function commandPath(cmd: string): string | null {
+  if (commandPathMemo.has(cmd)) return commandPathMemo.get(cmd)!;
+  let found: string | null = null;
   try {
     const out = execSync(`command -v ${cmd} 2>/dev/null`, { encoding: 'utf8', shell: '/bin/sh' }).trim();
-    return out || null;
+    found = out || null;
   } catch {
-    return null;
+    found = null;
   }
+  commandPathMemo.set(cmd, found);
+  return found;
 }
 
 /** Can we add to a running Steam on this box? (Linux with Steam's helper or the steam binary.) */
@@ -369,8 +397,8 @@ export function addNonSteamGameLive(exePath: string): AddResult {
  *  - otherwise → the byte-safe shortcuts.vdf write (nicer: sets name/icon/tags,
  *    but needs Steam closed).
  */
-export function addNonSteamGameSmart(exePath: string, appName: string, opts: { startDir?: string; tags?: string[] } = {}): AddResult {
-  if (process.platform === 'linux' && isSteamRunning() && canAddLive()) {
+export async function addNonSteamGameSmart(exePath: string, appName: string, opts: { startDir?: string; tags?: string[] } = {}): Promise<AddResult> {
+  if (process.platform === 'linux' && canAddLive() && (await isSteamRunning())) {
     return addNonSteamGameLive(exePath);
   }
   return addNonSteamGame(exePath, appName, opts);
@@ -383,11 +411,6 @@ export interface RemoveResult {
   error?: string;
   removed: string[];        // AppNames of shortcuts removed
   skippedSteamRunning?: boolean; // matching shortcut(s) left because Steam is open
-}
-
-function isInsideFolder(parent: string, child: string): boolean {
-  const rel = path.relative(parent, child);
-  return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
 }
 
 /**
@@ -421,7 +444,7 @@ export function readShortcutAppId(exePath: string): number | null {
  * do a read-only check and report whether a stale shortcut was left behind.
  * Byte-safe (round-trip gate), backs up, re-indexes remaining shortcuts.
  */
-export function removeNonSteamGamesUnder(folder: string): RemoveResult {
+export async function removeNonSteamGamesUnder(folder: string): Promise<RemoveResult> {
   if (!folder) return { ok: true, removed: [] };
   const users = findSteamUsers();
   if (!users.length) return { ok: true, removed: [] };
@@ -452,7 +475,7 @@ export function removeNonSteamGamesUnder(folder: string): RemoveResult {
 
     if (!matched.length) return { ok: true, removed: [] };
     // Found matching shortcut(s) but can't safely write while Steam is open.
-    if (isSteamRunning()) return { ok: true, removed: [], skippedSteamRunning: true };
+    if (await isSteamRunning()) return { ok: true, removed: [], skippedSteamRunning: true };
 
     // Re-index the survivors 0..n-1 (Steam expects sequential numeric keys).
     const newShortcuts: VdfMap = {};
