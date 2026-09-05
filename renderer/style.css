@@ -371,6 +371,12 @@ input[type="search"] { width: 220px; }
   padding: 24px;
   width: 440px;
   max-width: 90vw;
+  /* Never taller than the window: at the Deck's UI scale (140% on a 800px
+     panel) the Settings card would otherwise push its last buttons off
+     screen with no way to reach them. Cards with their own inner scroll
+     (detail, platform folders) override this. */
+  max-height: 90vh;
+  overflow-y: auto;
 }
 .modal-card h2 { margin-bottom: 16px; font-size: 1.1rem; }
 .modal-card label { display: block; margin-bottom: 12px; font-size: 0.85rem; color: var(--text-muted); }
@@ -395,6 +401,9 @@ input[type="search"] { width: 220px; }
   margin-bottom: 8px;
 }
 .settings-utils { display: flex; flex-wrap: wrap; gap: 8px; }
+.settings-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.settings-row-label { font-size: 0.85rem; color: var(--text-muted); min-width: 64px; }
+.settings-row .dropdown-menu { bottom: auto; top: calc(100% + 4px); }
 
 button.primary, button.secondary {
   border-radius: 6px;

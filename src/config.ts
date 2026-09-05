@@ -14,6 +14,7 @@ import { app, safeStorage } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 import { normalizeBaseUrl } from './romm';
+import { normalizeUiScale, UiScale } from './device';
 
 export interface PlatformSetup {
   folder: string;        // destination for standard (non-extracted) downloads
@@ -31,6 +32,7 @@ interface StoredConfig {
   platforms: Record<string, PlatformSetup>;
   basePath: string;    // used by the auto-fill helper (folder = basePath/fs_slug)
   stagingPath: string; // where archives land before extraction ('' = extract destination)
+  uiScale: UiScale;    // renderer zoom: 'auto' (Deck → 140%, else 100%) or an explicit percent
 }
 
 export interface PublicConfig {
@@ -46,11 +48,12 @@ export interface PublicConfig {
   platforms: Record<string, PlatformSetup>;
   basePath: string;
   stagingPath: string;
+  uiScale: UiScale;
 }
 
 const DEFAULTS: StoredConfig = {
   baseUrl: '', username: '', passwordEncrypted: '', theme: 'oled-limited', view: 'grid',
-  pinnedPlatforms: [], platforms: {}, basePath: '', stagingPath: '',
+  pinnedPlatforms: [], platforms: {}, basePath: '', stagingPath: '', uiScale: 'auto',
 };
 
 // Overridable so modules that read config can run under plain Node in tests.
@@ -157,6 +160,7 @@ export function getPublicConfig(): PublicConfig {
     platforms: stored.platforms || {},
     basePath: stored.basePath || '',
     stagingPath: stored.stagingPath || '',
+    uiScale: normalizeUiScale(stored.uiScale),
   };
 }
 
@@ -173,7 +177,7 @@ export function isConfigured(): boolean {
 export function setConfig(update: {
   baseUrl?: string; username?: string; password?: string; theme?: string; view?: string;
   pinnedPlatforms?: number[]; platforms?: Record<string, PlatformSetup>;
-  basePath?: string; stagingPath?: string;
+  basePath?: string; stagingPath?: string; uiScale?: string;
 }): PublicConfig {
   // Copy before mutating so a failed write can't leave the memo half-updated.
   const stored: StoredConfig = { ...load().stored };
@@ -183,6 +187,7 @@ export function setConfig(update: {
   if (update.view !== undefined) stored.view = update.view === 'list' ? 'list' : 'grid';
   if (update.basePath !== undefined) stored.basePath = update.basePath.trim();
   if (update.stagingPath !== undefined) stored.stagingPath = update.stagingPath.trim();
+  if (update.uiScale !== undefined) stored.uiScale = normalizeUiScale(update.uiScale);
   if (update.pinnedPlatforms !== undefined) {
     stored.pinnedPlatforms = (Array.isArray(update.pinnedPlatforms) ? update.pinnedPlatforms : [])
       .filter((id) => Number.isInteger(id));

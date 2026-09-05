@@ -109,6 +109,7 @@ A couple of quirks to expect on SteamOS:
 - **Multiple install paths** per platform, with a prompt to choose the location when more than one is configured.
 - **Add to Steam** (safe `shortcuts.vdf`) + desktop shortcuts (`.lnk` / `.desktop` / `.command`), set a default executable, and launch games directly.
 - **10 themes** including Steam Deck OLED orange.
+- **UI scale** — the interface zooms to 140% automatically on a Steam Deck (its 7" 1280×800 panel otherwise renders everything tiny); pick any size from 100–200% in **Settings → Display**, or use Ctrl + / Ctrl − / Ctrl 0.
 - **Cross-platform** — Steam Deck, Linux, Windows, macOS.
 
 ---

@@ -1257,8 +1257,27 @@ function autofillPlatformFolders() {
 
 // ── Settings ────────────────────────────────────────────
 
+const UI_SCALE_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: '100', label: '100%' },
+  { value: '125', label: '125%' },
+  { value: '150', label: '150%' },
+  { value: '175', label: '175%' },
+  { value: '200', label: '200%' },
+];
+
+/** Reflect the main process's effective zoom in the Settings dropdown + hint. */
+function renderUiScale(info) {
+  setDropdownValue('cfg-uiscale', info.scale);
+  const pct = Math.round(info.zoom * 100);
+  $('cfg-uiscale-hint').textContent = info.scale === 'auto'
+    ? (info.deck ? `Steam Deck detected — ${pct}%` : `${pct}%`)
+    : 'Ctrl + / Ctrl − to step, Ctrl 0 for Auto';
+}
+
 async function openSettings() {
   const cfg = await window.r2sd.getConfig();
+  window.r2sd.getUiScaleInfo().then(renderUiScale);
   window.r2sd.getVersion().then((v) => { $('cfg-version').textContent = v ? `v${v}` : ''; });
   $('cfg-url').value = cfg.baseUrl;
   $('cfg-username').value = cfg.username;
@@ -1432,6 +1451,9 @@ $('btn-clear-cache').addEventListener('click', async () => {
   $('cfg-test-result').textContent = 'Cache cleared.';
 });
 $('btn-quit').addEventListener('click', () => { window.r2sd.quitApp(); });
+initDropdown('cfg-uiscale', async (value) => { renderUiScale(await window.r2sd.setUiScale(value)); });
+setDropdownOptions('cfg-uiscale', UI_SCALE_OPTIONS, 'auto');
+window.r2sd.onUiScaleChanged(renderUiScale); // keyboard shortcuts change it too
 $('btn-add-self-steam').addEventListener('click', async () => {
   const btn = $('btn-add-self-steam');
   const out = $('cfg-test-result');
@@ -1548,6 +1570,13 @@ $('pf-staging-browse').addEventListener('click', async () => {
 });
 
 document.addEventListener('keydown', (e) => {
+  // UI scale: Ctrl+= / Ctrl+- step, Ctrl+0 back to Auto (persisted; the
+  // Settings dropdown follows via onUiScaleChanged).
+  if ((e.ctrlKey || e.metaKey) && !e.altKey) {
+    if (e.key === '=' || e.key === '+') { e.preventDefault(); window.r2sd.stepUiScale(1); return; }
+    if (e.key === '-' || e.key === '_') { e.preventDefault(); window.r2sd.stepUiScale(-1); return; }
+    if (e.key === '0') { e.preventDefault(); window.r2sd.setUiScale('auto'); return; }
+  }
   if (e.key === 'Escape') {
     $('theme-modal').hidden = true;
     closeAllDropdowns();

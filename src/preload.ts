@@ -30,6 +30,13 @@ contextBridge.exposeInMainWorld('r2sd', {
   onQueueUpdate: (cb: (payload: unknown) => void) =>
     ipcRenderer.on('queue:update', (_e, payload) => cb(payload)),
 
+  // UI scale (renderer zoom)
+  getUiScaleInfo: () => ipcRenderer.invoke('ui:scaleInfo'),
+  setUiScale: (scale: string) => ipcRenderer.invoke('ui:setScale', scale),
+  stepUiScale: (direction: number) => ipcRenderer.invoke('ui:stepScale', direction),
+  onUiScaleChanged: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('ui:scale-changed', (_e, payload) => cb(payload)),
+
   // Desktop shortcuts
   getPlatform: () => ipcRenderer.invoke('app:platform'),
   getVersion: () => ipcRenderer.invoke('app:version'),

@@ -11,6 +11,7 @@ import * as shortcuts from './shortcuts';
 import * as steam from './steam';
 import * as steamclient from './steamclient';
 import { isInsideFolder } from './fsutil';
+import { isSteamDeckCached, zoomForScale, stepScale, normalizeUiScale } from './device';
 
 // Cover art and screenshots are served to the renderer over a private scheme
 // that maps only onto the covers cache directory, so the renderer's CSP no
@@ -243,6 +244,34 @@ function migrateLegacyUserData(): void {
 
 let mainWindow: BrowserWindow | null = null;
 
+// ── UI scale (renderer zoom) ──────────────────────────────────────────────
+// See device.ts for why: the Deck's 215-PPI panel reports DPR 1, so the page
+// renders ~2.5x smaller than on a monitor. Zooming the whole renderer keeps
+// every layout rule intact and scales text, tiles and hit targets together.
+
+function currentZoom(): number {
+  return zoomForScale(config.getPublicConfig().uiScale, isSteamDeckCached());
+}
+
+function applyZoom(): void {
+  if (!mainWindow || mainWindow.isDestroyed()) return;
+  const zoom = currentZoom();
+  if (Math.abs(mainWindow.webContents.getZoomFactor() - zoom) > 1e-6) mainWindow.webContents.setZoomFactor(zoom);
+}
+
+function uiScaleInfo(): { scale: string; zoom: number; deck: boolean } {
+  return { scale: config.getPublicConfig().uiScale, zoom: currentZoom(), deck: isSteamDeckCached() };
+}
+
+/** Persist a scale choice, apply it, and tell the renderer (Settings dropdown). */
+function setUiScale(scale: string): { scale: string; zoom: number; deck: boolean } {
+  config.setConfig({ uiScale: normalizeUiScale(scale) });
+  applyZoom();
+  const info = uiScaleInfo();
+  send('ui:scale-changed', info);
+  return info;
+}
+
 function getClient(): RommClient {
   const { baseUrl, username, password } = config.getCredentials();
   return new RommClient(baseUrl, username, password);
@@ -404,6 +433,13 @@ function registerIpc(): void {
     return { ...result, steamRemoved: steamRes.removed, steamSkipped: !!steamRes.skippedSteamRunning };
   });
 
+  // UI scale
+  ipcMain.handle('ui:scaleInfo', () => uiScaleInfo());
+  ipcMain.handle('ui:setScale', (_e, scale: string) => setUiScale(scale));
+  // Ctrl+= / Ctrl+- from the renderer's keydown handler (no menu bar → no
+  // built-in zoom accelerators). Steps through the explicit sizes.
+  ipcMain.handle('ui:stepScale', (_e, direction: number) => setUiScale(stepScale(currentZoom(), direction > 0 ? 1 : -1)));
+
   // Host OS (renderer gates the Steam Deck tip on this)
   ipcMain.handle('app:platform', () => process.platform);
   ipcMain.handle('app:version', () => app.getVersion());
@@ -545,8 +581,14 @@ function createWindow(): void {
       contextIsolation: true,
       nodeIntegration: false,
       backgroundThrottling: false,
+      // Initial zoom so the first paint is already at the right scale (no jump)
+      zoomFactor: currentZoom(),
     },
   });
+  // Re-assert after load: Chromium restores a per-origin zoom level it saved
+  // from a previous session, which would otherwise override the setting.
+  mainWindow.webContents.on('did-finish-load', applyZoom);
+
   // The renderer is a local, single-page UI: never let it navigate away or
   // open windows, whatever ends up in a rendered string.
   mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
