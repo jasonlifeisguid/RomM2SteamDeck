@@ -1,7 +1,7 @@
 {
   "name": "romm2steamdeck-app",
   "productName": "RomM2SteamDeck",
-  "version": "2.2.15",
+  "version": "2.2.16",
   "description": "Desktop client for browsing and downloading from a RomM library",
   "main": "dist/main.js",
   "author": "Jason Walters",
@@ -23,6 +23,9 @@
       "buildResources": "build"
     },
     "afterPack": "build/after-pack.js",
+    "toolsets": {
+      "appimage": "1.0.3"
+    },
     "files": [
       "dist/**/*",
       "renderer/**/*",

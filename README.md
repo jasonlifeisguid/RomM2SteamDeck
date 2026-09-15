@@ -25,7 +25,7 @@ Grab the file for your system from the [**Releases**](https://github.com/jasonli
    ./RomM2SteamDeck.AppImage
    ```
 
-No dependencies to install. If your distro doesn't have FUSE, run it with `./RomM2SteamDeck.AppImage --appimage-extract-and-run`.
+No dependencies to install. The AppImage uses the static runtime, so it runs on both FUSE 2 systems (SteamOS) and FUSE 3-only distros (Arch, Omarchy, CachyOS, Ubuntu 24.04+) without installing `libfuse2`. If your system has no FUSE at all, run it with `./RomM2SteamDeck.AppImage --appimage-extract-and-run`.
 
 **Tip for updates:** keep the file named `RomM2SteamDeck.AppImage` (no version number) and just overwrite it — that way your Steam shortcut keeps working across updates.
 
