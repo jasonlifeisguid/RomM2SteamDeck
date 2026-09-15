@@ -13,6 +13,7 @@ import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as faugus from './faugus';
 
 export interface ExeFile {
   name: string;
@@ -72,14 +73,37 @@ export interface ShortcutResult {
 export interface LaunchResult {
   ok: boolean;
   error?: string;
+  /** Set when a Linux .exe was handed to Faugus Launcher. */
+  via?: 'faugus';
+  faugusMethod?: faugus.FaugusMethod;
+  faugusGameId?: string | null;
 }
 
-/** Launch a game executable. Windows runs it directly; a Windows .exe on
- *  Linux/macOS needs Proton/Wine, so we guide the user to Add-to-Steam. */
-export function launchGame(exePath: string): LaunchResult {
+/**
+ * Launch a game executable. Windows runs it directly. On Linux a Windows
+ * .exe is handed to Faugus Launcher (UMU/Proton) when it's installed and
+ * enabled; otherwise the user is pointed at Add-to-Steam. macOS has no
+ * Proton path, so .exe is always refused there.
+ */
+export function launchGame(exePath: string, opts: { faugusEnabled?: boolean } = {}): LaunchResult {
   if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
   const isExe = exePath.toLowerCase().endsWith('.exe');
 
+  if (process.platform === 'linux' && isExe) {
+    const install = opts.faugusEnabled === false ? null : faugus.findFaugus();
+    if (install) {
+      const res = faugus.launchWithFaugus(exePath, install);
+      return res.ok
+        ? { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId }
+        : { ok: false, error: `Faugus Launcher failed to start: ${res.error}` };
+    }
+    return {
+      ok: false,
+      error: opts.faugusEnabled === false
+        ? 'Faugus Launcher is turned off in Settings. Turn it on, or use "Add to Steam" to run this through Proton.'
+        : 'Running Windows games here needs Faugus Launcher (recommended — install it and Play just works) or "Add to Steam" for Proton.',
+    };
+  }
   if (process.platform !== 'win32' && isExe) {
     return {
       ok: false,

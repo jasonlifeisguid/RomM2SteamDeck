@@ -79,6 +79,7 @@
             <button id="btn-dl-cancel" class="secondary" hidden>Cancel</button>
             <button id="btn-play" class="primary" hidden>&#9654; Play</button>
             <button id="btn-shortcut" class="secondary" hidden>Add to Steam&hellip;</button>
+            <button id="btn-folders" class="secondary" hidden title="Open the game folder or its Windows-side saves / config folders">Folders&hellip;</button>
             <button id="btn-dl-delete" class="secondary danger" hidden>Delete from disk</button>
             <span id="detail-dl-status" class="small muted"></span>
           </div>
@@ -134,6 +135,9 @@
       <h2>Add Game Shortcut</h2>
       <p class="small muted mb-10">Select the executable to launch, then add it to Steam or create a desktop shortcut:</p>
       <div id="exe-list" class="exe-list"></div>
+      <div id="exe-faugus-tip" class="steamdeck-tip faugus-tip" hidden>
+        <strong>&#9654; Play</strong> runs this through <strong>Faugus Launcher</strong> (Proton) &mdash; no Steam step needed.
+      </div>
       <div id="exe-steamdeck-tip" class="steamdeck-tip" hidden>
         After the shortcut is created, find it on the desktop, right-click it, and choose
         <strong>Add to Steam</strong> to add the game to your Steam library.
@@ -154,6 +158,20 @@
         <button id="exe-shortcut" class="secondary" disabled>Desktop Shortcut</button>
         <button id="exe-play" class="secondary" disabled>&#9654; Play</button>
         <button id="exe-steam" class="primary" disabled hidden>Add to Steam</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Game folders: install dir + Windows-side (Proton prefix) user folders -->
+  <div id="folders-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="folders-backdrop"></div>
+    <div class="modal-card exe-card">
+      <h2>Game Folders</h2>
+      <p class="small muted mb-10" id="folders-game"></p>
+      <div id="folders-list" class="folders-list"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="folders-close" class="secondary">Close</button>
       </div>
     </div>
   </div>
@@ -223,6 +241,14 @@
             <div class="dropdown-menu" hidden></div>
           </div>
           <span id="cfg-uiscale-hint" class="small muted"></span>
+        </div>
+        <div class="settings-row" id="cfg-faugus-row" hidden>
+          <span class="settings-row-label">Faugus</span>
+          <div id="cfg-faugus" class="dropdown" data-value="auto" title="Play Windows games through Faugus Launcher (Linux)">
+            <button type="button" class="dropdown-trigger"><span class="dropdown-label">Auto</span><span class="dropdown-caret">&#9662;</span></button>
+            <div class="dropdown-menu" hidden></div>
+          </div>
+          <span id="cfg-faugus-hint" class="small muted"></span>
         </div>
       </div>
 

@@ -87,7 +87,13 @@ For Windows games (and any extracted game), open a downloaded game's **Add to St
 - On SteamOS with Steam running, it uses Valve's own `steam://addnonsteamgame` path so it works without closing Steam. With Steam closed, the file write is used instead (it can set the name, tags, and the Game Mode launch option).
 - Deleting a game from within the app also removes its Steam shortcut (when Steam is closed).
 
-### Running Windows games on Steam Deck / Linux (Proton)
+### Running Windows games on Steam Deck / Linux
+
+**Easiest: install [Faugus Launcher](https://github.com/Faugus/faugus-launcher).** When it's present (system package, AppImage in `~/Applications`, or Flatpak), the **▶ Play** button on any extracted Windows game hands the `.exe` to Faugus, which runs it through UMU/Proton with your Faugus default runner — no Steam step, no per-game setup. If you've already added the game inside Faugus, R2SD launches that entry instead so its own prefix and Proton choice apply. Turn this off in **Settings → Display → Faugus** if you'd rather go through Steam.
+
+**Finding your saves and configs.** A Windows game running under Proton keeps its Documents, Saved Games and AppData inside a Wine prefix, which is hard to find by hand. Open a downloaded game's **Folders…** (detail view or right-click) and R2SD lists the install folder plus every prefix the game has run in — Faugus's per-game or default prefix, and the Steam `compatdata` prefix — with one-click buttons for **User profile, Documents, Saved Games, AppData\Roaming, AppData\Local** and **Drive C:**. On Windows the same dialog opens the real user folders.
+
+#### The Steam route (Proton via Add to Steam)
 
 A Windows `.exe` added to Steam needs a Proton compatibility tool to run on Linux. Set it in Steam (this is a Steam setting, so the app can't do it for you reliably — Steam owns and cloud-syncs it):
 

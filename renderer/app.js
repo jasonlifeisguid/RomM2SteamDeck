@@ -536,6 +536,7 @@ function showContextMenu(e, rom) {
       item('▶ Play', () => playGame(rom));
       item('Add to Steam / Shortcut…', () => openExePicker(rom));
     }
+    item('Folders…', () => openFoldersModal(rom));
     item('Delete from disk', () => deleteDownloadFor(rom), true);
   } else {
     item('Download', () => quickDownload(rom));
@@ -886,6 +887,7 @@ function refreshDetailActions() {
   // Shortcut maker + Play: only for installed (extracted) PC games
   shortcutBtn.hidden = !(record && setup.autoExtract && !inQueue);
   playBtn.hidden = !(record && setup.autoExtract && !inQueue);
+  $('btn-folders').hidden = !(record && record.filePath && !inQueue);
   playBtn.textContent = record && record.defaultExe ? '▶ Play' : '▶ Play…';
   bar.hidden = !progress;
 
@@ -968,9 +970,11 @@ async function openExePicker(rom) {
 
   // Native "Add to Steam" only shown when a Steam install is found; the
   // "right-click → Add to Steam" tip is the Linux/Deck manual fallback.
-  const [platform, steam] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.steamStatus()]);
+  const [platform, steam, fg] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.steamStatus(), window.r2sd.faugusStatus()]);
   $('exe-steam').hidden = !steam.found;
-  $('exe-steamdeck-tip').hidden = !(platform === 'linux' && !steam.found);
+  const faugusActive = platform === 'linux' && fg.found && fg.enabled;
+  $('exe-faugus-tip').hidden = !faugusActive;
+  $('exe-steamdeck-tip').hidden = !(platform === 'linux' && !steam.found && !faugusActive);
   // On Linux these are Windows .exe games — offer "Run with Proton". If we can
   // drive SteamClient live (Decky/CEF) the checkbox sets it automatically; if not,
   // fall back to the manual Compatibility tip.
@@ -1044,14 +1048,19 @@ async function setDefaultFromPicker() {
   openExePicker(rom); // refresh the ★ default marker
 }
 
+function launchToast(rom, res) {
+  if (res.error) { toast(res.error, 'error'); return; }
+  const name = rom.name || rom.fs_name;
+  toast(res.via === 'faugus' ? `Launching ${name} via Faugus Launcher…` : `Launching ${name}…`, 'success');
+}
+
 async function playFromPicker() {
   if (!exeSelected || !exePickerRom) return;
   const rom = exePickerRom;
   const exe = exeSelected;
   closeExePicker();
   const res = await window.r2sd.launchGame(rom.id, exe.path); // also sets as default
-  if (res.error) toast(res.error, 'error');
-  else toast(`Launching ${rom.name || rom.fs_name}…`, 'success');
+  launchToast(rom, res);
   await reloadDownloads();
   if (state.detailRom?.id === rom.id) refreshDetailActions();
 }
@@ -1060,9 +1069,7 @@ async function playFromPicker() {
 async function playGame(rom) {
   const rec = state.downloads.get(rom.id);
   if (rec && rec.defaultExe) {
-    const res = await window.r2sd.launchGame(rom.id);
-    if (res.error) toast(res.error, 'error');
-    else toast(`Launching ${rom.name || rom.fs_name}…`, 'success');
+    launchToast(rom, await window.r2sd.launchGame(rom.id));
   } else {
     openExePicker(rom); // no default yet — choose an exe, then Play from the picker
   }
@@ -1090,6 +1097,57 @@ async function addToSteam() {
   if (proton && !res.protonLive) msg += ' · set Proton in Properties → Compatibility';
   toast(msg, 'success');
 }
+
+// ── Game folders modal ──────────────────────────────────
+// Install dir + the Windows-side user folders (Documents, Saved Games,
+// AppData…) inside whichever Proton prefix the game runs in. Paths come from
+// the main process and are re-validated there on open.
+
+let foldersRom = null;
+async function openFoldersModal(rom) {
+  foldersRom = rom;
+  $('folders-game').textContent = rom.name || rom.fs_name;
+  const list = $('folders-list');
+  list.innerHTML = '<p class="folders-empty">Looking up folders…</p>';
+  $('folders-modal').hidden = false;
+
+  const info = await window.r2sd.gameFolders(rom.id);
+  if (foldersRom?.id !== rom.id) return;
+  list.innerHTML = '';
+  const addGroup = (label, root, items) => {
+    const g = document.createElement('div');
+    const l = document.createElement('div'); l.className = 'folders-group-label'; l.textContent = label;
+    g.appendChild(l);
+    if (root) { const r = document.createElement('div'); r.className = 'folders-group-root'; r.textContent = root; r.title = root; g.appendChild(r); }
+    const row = document.createElement('div'); row.className = 'folders-group-items';
+    for (const it of items) {
+      const b = document.createElement('button');
+      b.className = 'secondary folder-btn';
+      b.textContent = it.label;
+      b.title = it.path;
+      b.addEventListener('click', async () => {
+        const res = await window.r2sd.openGameFolder(rom.id, it.path);
+        if (res.error) toast(res.error, 'error');
+      });
+      row.appendChild(b);
+    }
+    g.appendChild(row);
+    list.appendChild(g);
+  };
+  if (info.gameFolder) addGroup('Game', null, [{ label: 'Game folder (install)', path: info.gameFolder }]);
+  for (const p of info.prefixes) if (p.folders.length) addGroup(p.label, p.root, p.folders);
+  if (!info.gameFolder && !info.prefixes.length) {
+    list.innerHTML = '<p class="folders-empty">No folders found yet.</p>';
+  } else if (!info.prefixes.length) {
+    const hint = document.createElement('p');
+    hint.className = 'folders-empty';
+    hint.textContent = info.exe
+      ? 'No Windows-side folders yet — they appear after the game has been run once (through Faugus or Steam).'
+      : 'Pick a default executable (Play… or Add to Steam…) to locate this game\'s Windows-side save and config folders.';
+    list.appendChild(hint);
+  }
+}
+function closeFoldersModal() { $('folders-modal').hidden = true; foldersRom = null; }
 
 // ── Platform folders modal ──────────────────────────────
 
@@ -1275,9 +1333,27 @@ function renderUiScale(info) {
     : 'Ctrl + / Ctrl − to step, Ctrl 0 for Auto';
 }
 
+const FAUGUS_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'off', label: 'Off' },
+];
+
+/** Linux only: show the Faugus row with install status. */
+async function renderFaugusSetting(cfg) {
+  const [platform, fg] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.faugusStatus()]);
+  $('cfg-faugus-row').hidden = platform !== 'linux';
+  if (platform !== 'linux') return;
+  setDropdownValue('cfg-faugus', cfg.faugus || 'auto');
+  const how = { binary: 'system package', appimage: 'AppImage', flatpak: 'Flatpak' }[fg.method] || '';
+  $('cfg-faugus-hint').textContent = !fg.found
+    ? 'Not installed — Play will point you to Add to Steam'
+    : (cfg.faugus === 'off' ? `Installed (${how}), not used` : `Installed (${how}) — Play runs Windows games through it`);
+}
+
 async function openSettings() {
   const cfg = await window.r2sd.getConfig();
   window.r2sd.getUiScaleInfo().then(renderUiScale);
+  renderFaugusSetting(cfg);
   window.r2sd.getVersion().then((v) => { $('cfg-version').textContent = v ? `v${v}` : ''; });
   $('cfg-url').value = cfg.baseUrl;
   $('cfg-username').value = cfg.username;
@@ -1380,6 +1456,7 @@ function anyModalOpen() {
 
 function gpBack() {
   closeExePicker();
+  closeFoldersModal();
   closeDetail();
   closeSettings();
   closePlatformsModal();
@@ -1452,6 +1529,8 @@ $('btn-clear-cache').addEventListener('click', async () => {
 });
 $('btn-quit').addEventListener('click', () => { window.r2sd.quitApp(); });
 initDropdown('cfg-uiscale', async (value) => { renderUiScale(await window.r2sd.setUiScale(value)); });
+initDropdown('cfg-faugus', async (value) => { renderFaugusSetting(await window.r2sd.setConfig({ faugus: value })); });
+setDropdownOptions('cfg-faugus', FAUGUS_OPTIONS, 'auto');
 setDropdownOptions('cfg-uiscale', UI_SCALE_OPTIONS, 'auto');
 window.r2sd.onUiScaleChanged(renderUiScale); // keyboard shortcuts change it too
 $('btn-add-self-steam').addEventListener('click', async () => {
@@ -1543,6 +1622,9 @@ $('btn-dl').addEventListener('click', () => state.detailRom && startDownloadFor(
 $('btn-dl-cancel').addEventListener('click', () => state.detailRom && window.r2sd.cancelDownload(state.detailRom.id));
 $('btn-dl-delete').addEventListener('click', () => state.detailRom && deleteDownloadFor(state.detailRom));
 $('btn-shortcut').addEventListener('click', () => state.detailRom && openExePicker(state.detailRom));
+$('btn-folders').addEventListener('click', () => state.detailRom && openFoldersModal(state.detailRom));
+$('folders-close').addEventListener('click', closeFoldersModal);
+$('folders-backdrop').addEventListener('click', closeFoldersModal);
 $('exe-cancel').addEventListener('click', closeExePicker);
 $('exe-backdrop').addEventListener('click', closeExePicker);
 $('installpath-cancel').addEventListener('click', closeInstallPathPicker);
@@ -1582,6 +1664,7 @@ document.addEventListener('keydown', (e) => {
     closeAllDropdowns();
     closeExePicker();
     closeInstallPathPicker();
+    closeFoldersModal();
     closeDetail();
     closeSettings();
     closePlatformsModal();

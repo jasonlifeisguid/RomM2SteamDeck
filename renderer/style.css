@@ -404,6 +404,15 @@ input[type="search"] { width: 220px; }
 .settings-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .settings-row-label { font-size: 0.85rem; color: var(--text-muted); min-width: 64px; }
 .settings-row .dropdown-menu { bottom: auto; top: calc(100% + 4px); }
+.faugus-tip { border-color: var(--accent); }
+
+/* Game folders modal */
+.folders-list { display: flex; flex-direction: column; gap: 12px; max-height: 60vh; overflow-y: auto; }
+.folders-group-label { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-muted); margin-bottom: 4px; }
+.folders-group-root { font-size: 0.75rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px; }
+.folders-group-items { display: flex; flex-wrap: wrap; gap: 6px; }
+.folder-btn { font-size: 0.85rem; }
+.folders-empty { font-size: 0.85rem; color: var(--text-muted); }
 
 button.primary, button.secondary {
   border-radius: 6px;

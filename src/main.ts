@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -12,6 +12,8 @@ import * as steam from './steam';
 import * as steamclient from './steamclient';
 import { isInsideFolder } from './fsutil';
 import { isSteamDeckCached, zoomForScale, stepScale, normalizeUiScale } from './device';
+import * as faugus from './faugus';
+import * as prefixes from './prefixes';
 
 // Cover art and screenshots are served to the renderer over a private scheme
 // that maps only onto the covers cache directory, so the renderer's CSP no
@@ -476,7 +478,41 @@ function registerIpc(): void {
     const rec = downloads.findDownload(romId);
     const target = exePath || rec?.defaultExe;
     if (!target) return { ok: false, error: 'No executable selected for this game yet' };
-    return shortcuts.launchGame(target);
+    return shortcuts.launchGame(target, { faugusEnabled: config.getPublicConfig().faugus !== 'off' });
+  });
+
+  // ── Game folders: install dir + Windows-side user folders (saves/configs) ──
+  // Everything the renderer may open is computed here and re-validated on
+  // open, so the renderer can only ever open paths this function produced.
+  const gameFolders = (romId: number) => {
+    const rec = downloads.findDownload(romId);
+    if (!rec || !rec.filePath) return { gameFolder: null as string | null, exe: null as string | null, prefixes: [] as prefixes.PrefixInfo[] };
+    const exe = rec.defaultExe && fs.existsSync(rec.defaultExe) ? rec.defaultExe : null;
+    let found: prefixes.PrefixInfo[] = [];
+    if (exe) {
+      const steamAppId = process.platform === 'linux' ? steam.readShortcutAppId(exe) : null;
+      found = prefixes.resolvePrefixes(exe, { steamAppId, steamRoot: steam.findSteamRoot() });
+    } else if (process.platform === 'win32') {
+      found = prefixes.resolvePrefixes('', {});
+    }
+    const gameFolder = fs.existsSync(rec.filePath) ? (fs.statSync(rec.filePath).isDirectory() ? rec.filePath : path.dirname(rec.filePath)) : null;
+    return { gameFolder, exe, prefixes: found };
+  };
+  ipcMain.handle('game:folders', (_e, romId: number) => gameFolders(romId));
+  ipcMain.handle('game:openFolder', async (_e, romId: number, target: string) => {
+    const info = gameFolders(romId);
+    const allowed = new Set<string>();
+    if (info.gameFolder) allowed.add(info.gameFolder);
+    for (const p of info.prefixes) for (const f of p.folders) allowed.add(f.path);
+    if (typeof target !== 'string' || !allowed.has(target)) return { ok: false, error: 'Not a folder of this game' };
+    const err = await shell.openPath(target); // '' on success
+    return err ? { ok: false, error: err } : { ok: true };
+  });
+
+  // Faugus Launcher (Linux): is it installed, and is Play routed through it?
+  ipcMain.handle('faugus:status', () => {
+    const install = faugus.findFaugus();
+    return { found: install !== null, method: install?.method ?? null, enabled: config.getPublicConfig().faugus !== 'off' };
   });
 
   // Add to Steam (safe shortcuts.vdf writing)
