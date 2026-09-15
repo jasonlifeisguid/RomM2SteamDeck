@@ -205,4 +205,12 @@ App data lives in `%APPDATA%\romm2steamdeck-app` (Windows) or `~/.config/romm2st
 
 ## License
 
-See [LICENSE.md](LICENSE.md).
+RomM2SteamDeck is **source-available under the [PolyForm Noncommercial License 1.0.0](LICENSE.md)**. Copyright (c) 2026 jasonlifeisguid.
+
+- **You may** use, copy, modify, build, and share it — including your own forks — for any **noncommercial** purpose: personal use, hobby projects, education, research, nonprofits, and the like.
+- **You may not** sell it, charge for it, bundle it into a paid product or service, or otherwise use it for commercial advantage. That applies to modified versions too.
+- Every copy or fork must keep the `Required Notice` line from [LICENSE.md](LICENSE.md).
+
+**Name policy.** The license covers the code only. The name **RomM2SteamDeck** and the **R2SD** mark are not licensed: forks and redistributions must use a different name and must not state or imply that they are endorsed by, affiliated with, or supported by the original author. If you find this software being sold, it is doing so without permission and without any involvement of the author — please report it.
+
+This is not an OSI-approved open-source license (it restricts commercial use), which is why GitHub shows "Other" in the sidebar.
