@@ -24,6 +24,7 @@ const state = {
   pinned: [],
   theme: 'oled-limited',
   view: 'grid',
+  installedOnly: false, // toolbar filter: only games present on disk
   downloads: new Map(), // romId -> DownloadRecord
   progress: new Map(),  // romId -> latest download:event payload (active download)
   queue: [],            // [{ romId, romName, status: 'active'|'queued' }]
@@ -175,8 +176,29 @@ async function reloadConfig() {
   state.pinned = state.config.pinnedPlatforms || [];
   state.theme = state.config.theme || 'oled-limited';
   state.view = state.config.view === 'list' ? 'list' : 'grid';
+  state.installedOnly = state.config.installedOnly === true;
   applyTheme(state.theme);
   applyView();
+  applyInstalledFilterButton();
+}
+
+/** Installed-game count per platform (from the download records). */
+function installedCounts() {
+  const counts = new Map();
+  for (const r of state.downloads.values()) counts.set(r.platformId, (counts.get(r.platformId) || 0) + 1);
+  return counts;
+}
+
+function applyInstalledFilterButton() {
+  const btn = $('btn-installed');
+  btn.classList.toggle('active', state.installedOnly);
+  btn.title = state.installedOnly ? 'Showing installed games only (click to show all)' : 'Show installed games only';
+}
+
+/** The filter and the "Installed" sort both depend on the download records,
+ *  so a change in what's on disk must re-run the grid, not just patch badges. */
+function installedStateAffectsLayout() {
+  return state.installedOnly || state.sort === 'installed';
 }
 
 async function reloadDownloads() {
@@ -204,10 +226,13 @@ function renderPlatforms() {
     return;
   }
 
+  const installed = state.installedOnly ? installedCounts() : null;
   for (const p of platforms) {
     const isPinned = state.pinned.includes(p.id);
     const btn = document.createElement('button');
     btn.className = 'platform-item' + (p.id === state.currentPlatformId ? ' active' : '');
+    const installedHere = installed ? (installed.get(p.id) || 0) : 0;
+    if (installed && installedHere === 0) btn.classList.add('no-installed');
     btn.addEventListener('click', () => selectPlatform(p.id));
 
     const pin = document.createElement('span');
@@ -224,7 +249,8 @@ function renderPlatforms() {
     name.textContent = p.name;
     const count = document.createElement('span');
     count.className = 'count';
-    count.textContent = p.rom_count;
+    count.textContent = installed ? String(installedHere) : p.rom_count;
+    count.title = installed ? `${installedHere} installed of ${p.rom_count}` : '';
 
     btn.append(pin, name, count);
     list.appendChild(btn);
@@ -271,6 +297,9 @@ function visibleRoms() {
   if (state.genre) {
     roms = roms.filter((r) => romGenres(r).includes(state.genre));
   }
+  if (state.installedOnly) {
+    roms = roms.filter((r) => state.downloads.has(r.id));
+  }
   // Compute each rom's sort key once (Schwartzian transform) rather than
   // inside the comparator — sorting 5,000 roms by year used to construct a
   // Date object per comparison, ~60k times per keystroke.
@@ -280,6 +309,7 @@ function visibleRoms() {
     size: (r) => r.fs_size_bytes || 0,
     year: (r) => romYear(r) || 0,
     rating: (r) => romRating(r) || 0,
+    installed: (r) => (state.downloads.has(r.id) ? 1 : 0),
   }[state.sort] || (() => 0);
   const dir = state.sortDir === 'desc' ? -1 : 1;
   const keyed = roms.map((r) => ({ r, k: keyFn(r), n: r.name || r.fs_name || '' }));
@@ -618,9 +648,11 @@ function renderGrid() {
 
   const roms = visibleRoms();
   $('grid-status').hidden = roms.length > 0;
-  $('grid-status').textContent = state.roms.length
-    ? 'No games match your filters.'
-    : 'No games on this platform.';
+  $('grid-status').textContent = !state.roms.length
+    ? 'No games on this platform.'
+    : state.installedOnly && !state.search && !state.genre
+      ? 'Nothing installed on this platform yet — turn off the installed filter (✓) to browse.'
+      : state.installedOnly ? 'No installed games match your filters.' : 'No games match your filters.';
 
   const frag = document.createDocumentFragment();
   for (const rom of roms) frag.appendChild(buildCard(rom));
@@ -638,7 +670,7 @@ function renderGrid() {
  *  so while the view is in its default state (no search/genre filter, name
  *  ascending) a new page can be appended instead of rebuilding every card. */
 function canAppendPages() {
-  return !state.search && !state.genre && state.sort === 'name' && state.sortDir === 'asc';
+  return !state.search && !state.genre && !state.installedOnly && state.sort === 'name' && state.sortDir === 'asc';
 }
 function appendCards(roms) {
   const grid = $('game-grid');
@@ -674,6 +706,7 @@ async function selectPlatform(platformId, refresh = false) {
     setCacheStatus(result.fromCache, result.fetchedAt);
     updateGenreFilter();
     renderGrid();
+    if (state.installedOnly) renderPlatforms(); // counts may have changed after the sync
     if (changes.added || changes.removed) {
       toast(`Library sync: ${changes.added} adopted, ${changes.removed} removed`);
     }
@@ -738,6 +771,7 @@ window.r2sd.onDownloadEvent(async (event) => {
   updateCardActions(romId);
   renderQueueBar();
   if (state.detailRom?.id === romId) refreshDetailActions();
+  if (terminal && installedStateAffectsLayout()) { renderGrid(); renderPlatforms(); }
 });
 
 // Queue composition changes (serial queue in the main process)
@@ -835,6 +869,7 @@ async function deleteDownloadFor(rom) {
   updateCardBadge(rom.id);
   updateCardActions(rom.id);
   refreshDetailActions();
+  if (installedStateAffectsLayout()) { renderGrid(); renderPlatforms(); }
 }
 
 // ── Game detail modal ───────────────────────────────────
@@ -1576,7 +1611,7 @@ $('search').addEventListener('input', (e) => {
   searchTimer = setTimeout(renderGrid, 120);
 });
 // Sensible default direction when a sort field is chosen
-const SORT_DEFAULT_DIR = { name: 'asc', added: 'desc', size: 'desc', year: 'desc', rating: 'desc' };
+const SORT_DEFAULT_DIR = { name: 'asc', added: 'desc', size: 'desc', year: 'desc', rating: 'desc', installed: 'desc' };
 
 function updateSortDirButton() {
   const btn = $('btn-sortdir');
@@ -1596,6 +1631,7 @@ setDropdownOptions('sort', [
   { value: 'size', label: 'Size' },
   { value: 'year', label: 'Release Year' },
   { value: 'rating', label: 'Rating' },
+  { value: 'installed', label: 'Installed first' },
 ], state.sort);
 $('btn-sortdir').addEventListener('click', () => {
   state.sortDir = state.sortDir === 'asc' ? 'desc' : 'asc';
@@ -1606,6 +1642,13 @@ updateSortDirButton();
 initDropdown('genre-filter', (value) => {
   state.genre = value;
   renderGrid();
+});
+$('btn-installed').addEventListener('click', async () => {
+  state.installedOnly = !state.installedOnly;
+  applyInstalledFilterButton();
+  renderGrid();
+  renderPlatforms();
+  await window.r2sd.setConfig({ installedOnly: state.installedOnly });
 });
 $('btn-view').addEventListener('click', async () => {
   state.view = state.view === 'list' ? 'grid' : 'list';
