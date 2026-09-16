@@ -415,8 +415,21 @@ input[type="search"] { width: 220px; }
 .folders-group-root { font-size: 0.75rem; color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-bottom: 6px; }
 .folders-group-items { display: flex; flex-wrap: wrap; gap: 6px; }
 .folder-btn { font-size: 0.85rem; }
-.folders-group-actions { display: flex; gap: 6px; margin-top: 6px; }
+.folders-group-actions { display: flex; gap: 6px; margin-top: 6px; flex-wrap: wrap; }
 .folders-group-actions button { font-size: 0.8rem; }
+.folders-cloud { font-size: 0.8rem; margin-top: 6px; color: var(--text-muted); }
+.folders-cloud .state { font-weight: 600; color: var(--text); }
+.folders-cloud .state.ok { color: #4ade80; }
+.folders-cloud .state.warn { color: var(--accent); }
+.folders-cloud .state.bad { color: #f87171; }
+/* What syncs */
+.syncs-list { max-height: 40vh; overflow-y: auto; font-size: 0.78rem; font-family: ui-monospace, Consolas, monospace; border: 1px solid var(--border); border-radius: 6px; padding: 8px; margin-bottom: 10px; }
+.syncs-list .h { font-family: inherit; font-weight: 700; margin: 6px 0 2px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 0.7rem; }
+.syncs-list .f { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.syncs-list .f.x { color: var(--text-muted); }
+.syncs-list .f .why { color: var(--accent); margin-left: 6px; }
+.syncs-patterns { margin: 6px 0 10px; }
+.syncs-patterns textarea { width: 100%; margin-top: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem; }
 .folders-empty { font-size: 0.85rem; color: var(--text-muted); }
 
 button.primary, button.secondary {

@@ -177,6 +177,34 @@
     </div>
   </div>
 
+  <!-- What syncs: the files a save backup / cloud sync would include, and what's excluded -->
+  <div id="syncs-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="syncs-backdrop"></div>
+    <div class="modal-card exe-card">
+      <h2>What syncs</h2>
+      <p class="small muted mb-10" id="syncs-game"></p>
+      <div id="syncs-summary" class="small mb-10"></div>
+      <div id="syncs-list" class="syncs-list"></div>
+      <label class="proton-check" id="syncs-include-label">
+        <input type="checkbox" id="syncs-include">
+        Include config files for this game (its progress lives in .ini / config files)
+      </label>
+      <details class="syncs-patterns">
+        <summary class="small muted">Config-file patterns (apply to every game)</summary>
+        <textarea id="syncs-patterns" rows="4" spellcheck="false"></textarea>
+        <div class="modal-actions">
+          <span class="spacer"></span>
+          <button id="syncs-patterns-reset" class="secondary">Reset to defaults</button>
+          <button id="syncs-patterns-save" class="secondary">Save patterns</button>
+        </div>
+      </details>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="syncs-close" class="secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Install-path picker (shown on download when a platform has multiple paths) -->
   <div id="installpath-modal" class="modal" hidden>
     <div class="modal-backdrop" id="installpath-backdrop"></div>
@@ -258,6 +286,14 @@
             <div class="dropdown-menu" hidden></div>
           </div>
           <span id="cfg-faugusprefix-hint" class="small muted"></span>
+        </div>
+        <div class="settings-row" id="cfg-cloud-row" hidden>
+          <span class="settings-row-label">Cloud saves</span>
+          <div id="cfg-cloud" class="dropdown" data-value="off" title="Sync each game's saves with your RomM account around Play">
+            <button type="button" class="dropdown-trigger"><span class="dropdown-label">Off</span><span class="dropdown-caret">&#9662;</span></button>
+            <div class="dropdown-menu" hidden></div>
+          </div>
+          <span id="cfg-cloud-hint" class="small muted"></span>
         </div>
       </div>
 

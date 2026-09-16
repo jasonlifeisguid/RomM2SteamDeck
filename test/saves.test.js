@@ -54,7 +54,10 @@ test('backup zips only save folders, excludes Temp/Microsoft; restore into anoth
   const res = await backupSaves(src.root, out, 'My Game');
   assert.equal(res.ok, true, res.error);
   assert.ok(fs.existsSync(res.file));
-  assert.deepEqual(res.folders, ['Documents', 'Saved Games', 'AppData/Roaming', 'AppData/Local']);
+  // Folders are now reported at the top level of the zip (the .cfg under
+  // AppData/Local is config and excluded; Goldberg's config.ini too).
+  assert.deepEqual(res.folders, ['Documents', 'Saved Games']);
+  assert.equal(res.excludedConfig, 2);
 
   // Restore into a fresh prefix (simulates: backed up on the Deck, restored on Omarchy)
   const dst = makePrefix('dst', { 'Documents/existing.txt': 'KEEP', 'Documents/My Game/save1.dat': 'OLD' });
@@ -64,8 +67,8 @@ test('backup zips only save folders, excludes Temp/Microsoft; restore into anoth
   assert.equal(read('Documents/My Game/save1.dat'), 'SAVE1', 'overwritten by the backup');
   assert.equal(read('Documents/existing.txt'), 'KEEP', 'unrelated files untouched');
   assert.equal(read('Saved Games/Other/slot.sav'), 'SLOT');
-  assert.equal(read('AppData/Roaming/Goldberg UplayEmu Saves/123/config.ini'), 'GOLD');
-  assert.equal(read('AppData/Local/Ubisoft/x.cfg'), 'UBI');
+  assert.equal(fs.existsSync(path.join(dst.profile, 'AppData/Roaming/Goldberg UplayEmu Saves/123/config.ini')), false, '.ini is treated as config by default');
+  assert.equal(fs.existsSync(path.join(dst.profile, 'AppData/Local/Ubisoft/x.cfg')), false, '.cfg is treated as config by default');
   for (const junk of ['AppData/Local/Temp/junk.tmp', 'AppData/Local/Microsoft/Windows/cache.bin', 'AppData/Roaming/Microsoft/Windows/Themes/t.theme', 'Desktop/shortcut.lnk', 'Downloads/big.iso']) {
     assert.equal(fs.existsSync(path.join(dst.profile, junk)), false, `${junk} must not be in the backup`);
   }

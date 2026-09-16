@@ -45,6 +45,10 @@ export interface DownloadRecord {
   size: number;
   downloadedAt: number;
   defaultExe?: string; // chosen executable for Play / shortcuts
+  /** Cloud-save sync point for this game (see cloudsaves.ts). */
+  cloud?: { saveId: number; contentHash: string; fingerprint: string; syncedAt: number };
+  /** Include config-like files (.ini/.cfg/Saved/Config) in this game's save backups. */
+  syncConfigFiles?: boolean;
 }
 
 export interface RomInfo {
@@ -152,6 +156,16 @@ function upsertRecord(record: DownloadRecord): void {
 
 function removeRecord(romId: number): void {
   saveRecords(loadRecords().filter((r) => r.romId !== romId));
+}
+
+/** Merge fields into a game's record. Returns false if the game isn't tracked. */
+export function updateRecord(romId: number, patch: Partial<DownloadRecord>): boolean {
+  const records = loadRecords();
+  const rec = records.find((r) => r.romId === romId);
+  if (!rec) return false;
+  Object.assign(rec, patch);
+  saveRecords(records);
+  return true;
 }
 
 /** Remember the chosen executable for a downloaded game (for Play / shortcuts). */

@@ -76,6 +76,22 @@ export function slimRom(raw: Record<string, unknown>): RommRom {
   return rom;
 }
 
+export interface RommSave {
+  id: number;
+  rom_id: number;
+  user_id: number;
+  file_name: string;
+  file_size_bytes: number;
+  emulator: string | null;
+  slot: string | null;
+  content_hash: string | null; // MD5 of the file
+  is_public: boolean;
+  origin_device_id: string | null;
+  created_at: string;
+  updated_at: string;
+  device_syncs?: { device_id: string; device_name: string; last_synced_at: string }[];
+}
+
 const PAGE_SIZE = 500;
 const REQUEST_TIMEOUT_MS = 30_000;
 
@@ -147,6 +163,61 @@ export class RommClient {
       throw new Error(`Download failed: ${response.status} ${response.statusText}`);
     }
     return response;
+  }
+
+  // ── Saves (RomM ≥ 3.x; devices ≥ 5.x) ──────────────────────────────────
+
+  private async json(method: string, path: string, body?: BodyInit, ctype?: string): Promise<{ status: number; data: unknown }> {
+    const headers: Record<string, string> = { accept: 'application/json', Authorization: this.authHeader };
+    if (ctype) headers['Content-Type'] = ctype;
+    const response = await fetch(`${this.baseUrl}/api${path}`, { method, headers, body, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS * 4) });
+    const text = await response.text();
+    let data: unknown = null;
+    try { data = text ? JSON.parse(text) : null; } catch { data = text; }
+    return { status: response.status, data };
+  }
+
+  /** Latest save per slot for a rom (the current user's own saves). */
+  async savesSummary(romId: number): Promise<{ total_count: number; slots: { slot: string | null; count: number; latest: RommSave }[] }> {
+    const r = await this.json('GET', `/saves/summary?rom_id=${romId}`);
+    if (r.status !== 200) throw new Error(`RomM saves summary failed: ${r.status}`);
+    return r.data as { total_count: number; slots: { slot: string | null; count: number; latest: RommSave }[] };
+  }
+
+  /** Upload a save file for a rom. Each upload is a new, timestamped version;
+   *  `autocleanupLimit` keeps only that many in the slot. */
+  async uploadSave(romId: number, fileName: string, content: Buffer, opts: { emulator: string; slot: string; deviceId?: string; autocleanupLimit?: number }): Promise<RommSave> {
+    const q = new URLSearchParams({ rom_id: String(romId), emulator: opts.emulator, slot: opts.slot });
+    if (opts.deviceId) q.set('device_id', opts.deviceId);
+    if (opts.autocleanupLimit) { q.set('autocleanup', 'true'); q.set('autocleanup_limit', String(opts.autocleanupLimit)); }
+    const form = new FormData();
+    form.append('saveFile', new Blob([new Uint8Array(content)]), fileName);
+    const r = await this.json('POST', `/saves?${q}`, form);
+    if (r.status !== 200 && r.status !== 201) throw new Error(`RomM save upload failed: ${r.status} ${JSON.stringify(r.data).slice(0, 120)}`);
+    return r.data as RommSave;
+  }
+
+  async downloadSave(saveId: number, deviceId?: string): Promise<Buffer> {
+    const q = deviceId ? `?device_id=${encodeURIComponent(deviceId)}` : '';
+    const response = await fetch(`${this.baseUrl}/api/saves/${saveId}/content${q}`, {
+      headers: { Authorization: this.authHeader }, signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS * 4),
+    });
+    if (!response.ok) throw new Error(`RomM save download failed: ${response.status}`);
+    return Buffer.from(await response.arrayBuffer());
+  }
+
+  /** Tell RomM this device now has the save (shows up in the save's device list). Best-effort. */
+  async confirmSaveDownloaded(saveId: number, deviceId: string): Promise<void> {
+    await this.json('POST', `/saves/${saveId}/downloaded`, JSON.stringify({ device_id: deviceId }), 'application/json');
+  }
+
+  /** Register this machine as a RomM device. Returns null on servers without the devices API. */
+  async registerDevice(info: { name: string; platform: string; client: string; client_version: string; hostname: string }): Promise<string | null> {
+    const r = await this.json('POST', '/devices', JSON.stringify({ ...info, allow_existing: true }), 'application/json');
+    if (r.status === 404 || r.status === 405) return null;
+    if (r.status !== 200 && r.status !== 201) throw new Error(`RomM device registration failed: ${r.status} ${JSON.stringify(r.data).slice(0, 120)}`);
+    const d = r.data as { device_id?: string };
+    return d?.device_id || null;
   }
 
   async heartbeat(): Promise<{ ok: boolean; version?: string; error?: string }> {

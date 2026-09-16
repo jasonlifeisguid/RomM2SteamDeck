@@ -15,6 +15,7 @@ import { isSteamDeckCached, zoomForScale, stepScale, normalizeUiScale } from './
 import * as faugus from './faugus';
 import * as prefixes from './prefixes';
 import * as saves from './saves';
+import * as cloud from './cloudsaves';
 
 // Cover art and screenshots are served to the renderer over a private scheme
 // that maps only onto the covers cache directory, so the renderer's CSP no
@@ -356,6 +357,72 @@ function backgroundRefresh(key: string, refresh: () => Promise<unknown>, event: 
     .finally(() => inFlight.delete(key));
 }
 
+// ── Game folders: install dir + Windows-side user folders (saves/configs) ──
+// Everything the renderer may open is computed here and re-validated on
+// open, so the renderer can only ever open paths this function produced.
+const gameFolders = (romId: number) => {
+  const rec = downloads.findDownload(romId);
+  if (!rec || !rec.filePath) return { gameFolder: null as string | null, exe: null as string | null, prefixes: [] as prefixes.PrefixInfo[] };
+  const exe = rec.defaultExe && fs.existsSync(rec.defaultExe) ? rec.defaultExe : null;
+  let found: prefixes.PrefixInfo[] = [];
+  if (exe) {
+    const steamAppId = process.platform === 'linux' ? steam.readShortcutAppId(exe) : null;
+    found = prefixes.resolvePrefixes(exe, { steamAppId, steamRoot: steam.findSteamRoot() });
+  } else if (process.platform === 'win32') {
+    found = prefixes.resolvePrefixes('', {});
+  }
+  const gameFolder = fs.existsSync(rec.filePath) ? (fs.statSync(rec.filePath).isDirectory() ? rec.filePath : path.dirname(rec.filePath)) : null;
+  return { gameFolder, exe, prefixes: found };
+};
+
+// ── Cloud saves (RomM) ─────────────────────────────────────────────────────
+
+function saveRulesFor(romId: number): saves.SaveRules {
+  const cfg = config.getPublicConfig();
+  const rec = downloads.findDownload(romId);
+  return { configExcludes: cfg.saveExcludes, includeConfig: rec?.syncConfigFiles === true };
+}
+
+/** Register this machine with RomM once (servers without the devices API → ''). */
+let deviceRegistration: Promise<string> | null = null;
+function rommDeviceId(): Promise<string> {
+  const have = config.getPublicConfig().rommDeviceId;
+  if (have) return Promise.resolve(have);
+  if (!deviceRegistration) {
+    deviceRegistration = (async () => {
+      try {
+        const id = await getClient().registerDevice({
+          name: os.hostname(), platform: process.platform, client: 'RomM2SteamDeck', client_version: app.getVersion(), hostname: os.hostname(),
+        });
+        if (id) config.setConfig({ rommDeviceId: id });
+        return id || '';
+      } catch (err) {
+        console.error('RomM device registration failed:', err);
+        return '';
+      } finally {
+        deviceRegistration = null;
+      }
+    })();
+  }
+  return deviceRegistration;
+}
+
+async function cloudDeps(romId: number): Promise<cloud.CloudDeps> {
+  return {
+    client: getClient(),
+    rules: saveRulesFor(romId),
+    deviceId: (await rommDeviceId()) || null,
+    getRecord: () => downloads.findDownload(romId)?.cloud ?? null,
+    setRecord: (rec) => { downloads.updateRecord(romId, { cloud: rec }); },
+  };
+}
+
+/** The prefix that auto-sync is allowed to touch: the game's own (never the shared default). */
+function ownPrefixFor(romId: number): string | null {
+  const info = gameFolders(romId);
+  return info.prefixes.find((p) => p.source === 'faugus-game' || p.source === 'steam')?.root ?? null;
+}
+
 function registerIpc(): void {
   // Config
   ipcMain.handle('config:get', () => config.getPublicConfig());
@@ -492,31 +559,38 @@ function registerIpc(): void {
         }
       } catch { /* cosmetic */ }
     }
-    return shortcuts.launchGame(target, {
+    // Cloud saves (auto): bring the game's own prefix up to date first. If the
+    // prefix doesn't exist yet we still know where Faugus will create it —
+    // the registration path — so a cloud save can seed it before first run.
+    let cloudAction: cloud.AutoAction | undefined;
+    let cloudPrefix: string | null = null;
+    const gameName = rec?.romName || path.basename(target);
+    const autoCloud = process.platform === 'linux' && cfg.cloudSaves === 'auto' && cfg.faugus !== 'off' && cfg.faugusPrefix !== 'shared' && config.isConfigured();
+    if (autoCloud) {
+      cloudPrefix = ownPrefixFor(romId);
+      if (!cloudPrefix) {
+        const fx = faugus.readFaugusConfig();
+        cloudPrefix = path.join(fx.prefixesDir, faugus.formatTitle(gameName) || 'game');
+      }
+      cloudAction = await cloud.beforeLaunch(await cloudDeps(romId), romId, cloudPrefix, gameName);
+    }
+    const res = shortcuts.launchGame(target, {
       faugusEnabled: cfg.faugus !== 'off',
       faugusPerGame: cfg.faugusPrefix !== 'shared',
       title: rec?.romName,
       coverPng,
+      onExit: autoCloud ? async () => {
+        // Re-resolve: the prefix now exists (and the registration may have
+        // chosen a suffixed id if the title clashed).
+        const pfx = ownPrefixFor(romId) || cloudPrefix;
+        if (!pfx) return;
+        const action = await cloud.afterExit(await cloudDeps(romId), romId, pfx, gameName);
+        send('cloud:event', { romId, gameName, ...action });
+      } : undefined,
     });
+    return { ...res, cloud: cloudAction };
   });
 
-  // ── Game folders: install dir + Windows-side user folders (saves/configs) ──
-  // Everything the renderer may open is computed here and re-validated on
-  // open, so the renderer can only ever open paths this function produced.
-  const gameFolders = (romId: number) => {
-    const rec = downloads.findDownload(romId);
-    if (!rec || !rec.filePath) return { gameFolder: null as string | null, exe: null as string | null, prefixes: [] as prefixes.PrefixInfo[] };
-    const exe = rec.defaultExe && fs.existsSync(rec.defaultExe) ? rec.defaultExe : null;
-    let found: prefixes.PrefixInfo[] = [];
-    if (exe) {
-      const steamAppId = process.platform === 'linux' ? steam.readShortcutAppId(exe) : null;
-      found = prefixes.resolvePrefixes(exe, { steamAppId, steamRoot: steam.findSteamRoot() });
-    } else if (process.platform === 'win32') {
-      found = prefixes.resolvePrefixes('', {});
-    }
-    const gameFolder = fs.existsSync(rec.filePath) ? (fs.statSync(rec.filePath).isDirectory() ? rec.filePath : path.dirname(rec.filePath)) : null;
-    return { gameFolder, exe, prefixes: found };
-  };
   ipcMain.handle('game:folders', (_e, romId: number) => gameFolders(romId));
   ipcMain.handle('game:openFolder', async (_e, romId: number, target: string) => {
     const info = gameFolders(romId);
@@ -541,7 +615,7 @@ function registerIpc(): void {
     const rec = downloads.findDownload(romId);
     const picked = await dialog.showOpenDialog(mainWindow!, { title: 'Folder to save the backup in', properties: ['openDirectory', 'createDirectory'] });
     if (picked.canceled || !picked.filePaths[0]) return { ok: false, cancelled: true };
-    return saves.backupSaves(root, picked.filePaths[0], rec?.romName || 'game');
+    return saves.backupSaves(root, picked.filePaths[0], rec?.romName || 'game', saveRulesFor(romId));
   });
   ipcMain.handle('saves:restore', async (_e, romId: number, prefixRoot: string) => {
     const root = prefixRootFor(romId, prefixRoot);
@@ -555,6 +629,46 @@ function registerIpc(): void {
     });
     if (confirm.response !== 0) return { ok: false, cancelled: true };
     return saves.restoreSaves(root, picked.filePaths[0]);
+  });
+
+  // ── Cloud saves IPC ──────────────────────────────────────────────────────
+  ipcMain.handle('cloud:status', async (_e, romId: number, prefixRoot: string) => {
+    const root = prefixRootFor(romId, prefixRoot);
+    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    if (!config.isConfigured()) return { ok: false, error: 'Not connected to RomM' };
+    try { return { ok: true, ...(await cloud.status(await cloudDeps(romId), romId, root)), own: root === ownPrefixFor(romId) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+  });
+  ipcMain.handle('cloud:upload', async (_e, romId: number, prefixRoot: string) => {
+    const root = prefixRootFor(romId, prefixRoot);
+    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const rec = downloads.findDownload(romId);
+    return cloud.upload(await cloudDeps(romId), romId, root, rec?.romName || 'game');
+  });
+  ipcMain.handle('cloud:download', async (_e, romId: number, prefixRoot: string) => {
+    const root = prefixRootFor(romId, prefixRoot);
+    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const confirm = await dialog.showMessageBox(mainWindow!, {
+      type: 'warning', buttons: ['Download & restore', 'Cancel'], defaultId: 1, cancelId: 1,
+      message: 'Restore the latest RomM save into this prefix?',
+      detail: `Files from the cloud save will overwrite same-named files in\n${root}\n\nOther files are left alone.`,
+    });
+    if (confirm.response !== 0) return { ok: false, cancelled: true };
+    return cloud.download(await cloudDeps(romId), romId, root);
+  });
+  // What would be backed up / synced from this prefix, and what's excluded and why
+  ipcMain.handle('saves:preview', (_e, romId: number, prefixRoot: string) => {
+    const root = prefixRootFor(romId, prefixRoot);
+    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const listing = saves.listSaveFiles(root, saveRulesFor(romId));
+    if (!listing) return { ok: false, error: 'No Windows user profile in this prefix yet' };
+    const rec = downloads.findDownload(romId);
+    return { ok: true, included: listing.included, excluded: listing.excluded, totalBytes: listing.totalBytes, includeConfig: rec?.syncConfigFiles === true, patterns: config.getPublicConfig().saveExcludes };
+  });
+  ipcMain.handle('saves:setIncludeConfig', (_e, romId: number, include: boolean) => downloads.updateRecord(romId, { syncConfigFiles: Boolean(include) }));
+  ipcMain.handle('saves:setExcludes', (_e, patterns: string[] | null) => {
+    config.setConfig({ saveExcludes: patterns === null ? saves.DEFAULT_CONFIG_EXCLUDES : patterns });
+    return config.getPublicConfig().saveExcludes;
   });
 
   // Faugus Launcher (Linux): is it installed, and is Play routed through it?

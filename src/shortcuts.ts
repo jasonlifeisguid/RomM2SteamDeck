@@ -81,6 +81,9 @@ export interface LaunchResult {
   faugusRegistered?: boolean;
   /** Per-game prefix was wanted but couldn't be set up; ran in the shared prefix. */
   faugusRegisterError?: string;
+  exitTracked?: boolean;
+  /** What cloud-save sync did before launch (main fills this in). */
+  cloud?: import('./cloudsaves').AutoAction;
 }
 
 /**
@@ -91,7 +94,7 @@ export interface LaunchResult {
  */
 export function launchGame(
   exePath: string,
-  opts: { faugusEnabled?: boolean; faugusPerGame?: boolean; title?: string; coverPng?: string } = {}
+  opts: { faugusEnabled?: boolean; faugusPerGame?: boolean; title?: string; coverPng?: string; onExit?: (code: number | null) => void } = {}
 ): LaunchResult {
   if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
   const isExe = exePath.toLowerCase().endsWith('.exe');
@@ -100,10 +103,10 @@ export function launchGame(
     const install = opts.faugusEnabled === false ? null : faugus.findFaugus();
     if (install) {
       const res = faugus.launchWithFaugus(exePath, install, undefined, {
-        perGame: opts.faugusPerGame !== false, title: opts.title, coverPng: opts.coverPng,
+        perGame: opts.faugusPerGame !== false, title: opts.title, coverPng: opts.coverPng, onExit: opts.onExit,
       });
       return res.ok
-        ? { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId, faugusRegistered: res.registered, faugusRegisterError: res.registerError }
+        ? { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId, faugusRegistered: res.registered, faugusRegisterError: res.registerError, exitTracked: res.exitTracked }
         : { ok: false, error: `Faugus Launcher failed to start: ${res.error}` };
     }
     return {

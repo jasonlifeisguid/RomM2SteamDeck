@@ -53,6 +53,14 @@ contextBridge.exposeInMainWorld('r2sd', {
   setDefaultExe: (romId: number, exePath: string) => ipcRenderer.invoke('game:setDefaultExe', romId, exePath),
   launchGame: (romId: number, exePath?: string, coverPath?: string) => ipcRenderer.invoke('game:launch', romId, exePath, coverPath),
   backupSaves: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:backup', romId, prefixRoot),
+  cloudStatus: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:status', romId, prefixRoot),
+  cloudUpload: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:upload', romId, prefixRoot),
+  cloudDownload: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:download', romId, prefixRoot),
+  savesPreview: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:preview', romId, prefixRoot),
+  setIncludeConfig: (romId: number, include: boolean) => ipcRenderer.invoke('saves:setIncludeConfig', romId, include),
+  setSaveExcludes: (patterns: string[] | null) => ipcRenderer.invoke('saves:setExcludes', patterns),
+  onCloudEvent: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('cloud:event', (_e, payload) => cb(payload)),
   restoreSaves: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:restore', romId, prefixRoot),
 
   // Background-refresh + progress events

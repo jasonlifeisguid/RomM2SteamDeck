@@ -734,6 +734,11 @@ window.r2sd.onRefreshFailed(({ platformId, error }) => {
   setCacheRefreshFailed(error || 'refresh failed');
 });
 
+window.r2sd.onCloudEvent((e) => {
+  if (e.action === 'uploaded') toast(`${e.gameName}: saves uploaded to RomM`, 'success');
+  else if (e.action === 'error') toast(`${e.gameName}: cloud save upload failed — ${e.error}`, 'error');
+});
+
 window.r2sd.onPlatformsUpdated(({ data, fetchedAt }) => {
   state.platforms = data;
   setCacheStatus(false, fetchedAt);
@@ -1090,6 +1095,14 @@ function launchToast(rom, res) {
   if (res.faugusRegistered) toast(`Added ${name} to Faugus with its own prefix — launching…`, 'success');
   else toast(`Launching ${name} via Faugus Launcher…`, 'success');
   if (res.faugusRegisterError) toast(`${res.faugusRegisterError}. Ran in the shared prefix this time.`, 'error');
+  const c = res.cloud;
+  if (!c || c.action === 'none') return;
+  const from = c.from ? ` from ${c.from}` : '';
+  if (c.action === 'restored') toast(`Restored newer saves${from} (RomM)`, 'success');
+  else if (c.action === 'seeded') toast(`New prefix seeded with your RomM saves${from}`, 'success');
+  else if (c.action === 'uploaded') toast('Uploaded your latest saves to RomM before launching', 'success');
+  else if (c.action === 'conflict') toast('Saves differ from RomM on both sides — not synced. Use Folders… to choose.', 'error');
+  else if (c.action === 'error') toast(`Cloud saves: ${c.error}`, 'error');
 }
 
 async function playFromPicker() {
@@ -1194,7 +1207,56 @@ async function openFoldersModal(rom) {
         if (res.error) toast(res.error, 'error');
         else toast(`Saves restored (${res.folders.join(', ')})`, 'success');
       });
+      mk('What syncs…', 'The files a backup or cloud sync would include, and what is excluded as config', () => openSyncsModal(rom, root));
       g.appendChild(actions);
+
+      // Cloud (RomM) row: status + upload/download
+      const cloudRow = document.createElement('div');
+      cloudRow.className = 'folders-cloud';
+      cloudRow.textContent = 'RomM: checking…';
+      g.appendChild(cloudRow);
+      const cloudActions = document.createElement('div');
+      cloudActions.className = 'folders-group-actions';
+      const cmk = (label, title, fn) => {
+        const b = document.createElement('button');
+        b.className = 'secondary'; b.textContent = label; b.title = title;
+        b.addEventListener('click', async () => { b.disabled = true; try { await fn(); } finally { b.disabled = false; } });
+        cloudActions.appendChild(b);
+        return b;
+      };
+      const refreshCloud = async () => {
+        const st = await window.r2sd.cloudStatus(rom.id, root);
+        if (foldersRom?.id !== rom.id) return;
+        cloudRow.innerHTML = '';
+        if (!st.ok) { cloudRow.textContent = `RomM: ${st.error}`; return; }
+        const label = {
+          nothing: ['No saves here or on RomM', ''], 'remote-only': ['RomM has saves, nothing local yet', 'warn'],
+          'local-only': ['Not on RomM yet', 'warn'], 'in-sync': ['In sync with RomM', 'ok'],
+          'local-newer': ['Local is newer than RomM', 'warn'], 'remote-newer': ['RomM is newer than local', 'warn'],
+          conflict: ['Both changed since last sync — choose', 'bad'],
+        }[st.state] || [st.state, ''];
+        const s = document.createElement('span'); s.className = 'state ' + label[1]; s.textContent = label[0];
+        cloudRow.appendChild(s);
+        if (st.remote) {
+          const when = new Date(st.remote.updatedAt);
+          cloudRow.append(` · latest on RomM ${when.toLocaleString()}${st.remote.fromDevice ? ` from ${st.remote.fromDevice}` : ''} (${formatSize(st.remote.size)}, ${st.remote.versions} version${st.remote.versions === 1 ? '' : 's'})`);
+        }
+        if (st.local) cloudRow.append(` · local ${st.local.files} files, ${formatSize(st.local.bytes)}${st.local.excludedConfig ? `, ${st.local.excludedConfig} config files excluded` : ''}`);
+        if (!st.own) cloudRow.append(' · shared prefix: manual only');
+      };
+      cmk('Upload to RomM', 'Zip this prefix\'s saves and store them in your RomM account (keeps the last 5 versions)', async () => {
+        const res = await window.r2sd.cloudUpload(rom.id, root);
+        if (res.error) toast(res.error, 'error'); else toast(`Uploaded ${res.files} files (${formatSize(res.bytes)}) to RomM`, 'success');
+        await refreshCloud();
+      });
+      cmk('Download from RomM', 'Restore the latest RomM save into this prefix', async () => {
+        const res = await window.r2sd.cloudDownload(rom.id, root);
+        if (res.cancelled) return;
+        if (res.error) toast(res.error, 'error'); else toast('Saves restored from RomM', 'success');
+        await refreshCloud();
+      });
+      g.appendChild(cloudActions);
+      refreshCloud();
     }
     list.appendChild(g);
   };
@@ -1212,6 +1274,40 @@ async function openFoldersModal(rom) {
   }
 }
 function closeFoldersModal() { $('folders-modal').hidden = true; foldersRom = null; }
+
+// ── What syncs modal ────────────────────────────────────
+
+let syncsCtx = null;
+async function openSyncsModal(rom, root) {
+  syncsCtx = { rom, root };
+  $('syncs-game').textContent = `${rom.name || rom.fs_name} — ${root}`;
+  $('syncs-list').innerHTML = '<div class="f">Scanning…</div>';
+  $('syncs-modal').hidden = false;
+  await renderSyncs();
+}
+async function renderSyncs() {
+  if (!syncsCtx) return;
+  const { rom, root } = syncsCtx;
+  const p = await window.r2sd.savesPreview(rom.id, root);
+  if (!syncsCtx || syncsCtx.rom.id !== rom.id) return;
+  const list = $('syncs-list');
+  list.innerHTML = '';
+  if (!p.ok) { list.textContent = p.error; return; }
+  $('syncs-summary').textContent = `${p.included.length} files, ${formatSize(p.totalBytes)} will sync · ${p.excluded.filter((e) => e.reason === 'config').length} config files excluded · ${p.excluded.filter((e) => e.reason === 'junk').length} temp/system files skipped`;
+  $('syncs-include').checked = p.includeConfig;
+  $('syncs-patterns').value = p.patterns.join('\n');
+  const add = (cls, text, why) => { const d = document.createElement('div'); d.className = 'f ' + cls; d.textContent = text; d.title = text; if (why) { const w = document.createElement('span'); w.className = 'why'; w.textContent = why; d.appendChild(w); } list.appendChild(d); };
+  const h = (t) => { const d = document.createElement('div'); d.className = 'h'; d.textContent = t; list.appendChild(d); };
+  h('Included');
+  if (!p.included.length) add('x', '(nothing yet)');
+  for (const f of p.included.slice(0, 400)) add('', `${f.rel}  (${formatSize(f.size)})`);
+  if (p.included.length > 400) add('x', `… and ${p.included.length - 400} more`);
+  const cfg = p.excluded.filter((e) => e.reason === 'config');
+  h('Excluded as config (per-device settings)');
+  if (!cfg.length) add('x', '(none)');
+  for (const f of cfg.slice(0, 200)) add('x', f.rel, `matches ${f.pattern}`);
+}
+function closeSyncsModal() { $('syncs-modal').hidden = true; syncsCtx = null; }
 
 // ── Platform folders modal ──────────────────────────────
 
@@ -1405,13 +1501,22 @@ const FAUGUS_PREFIX_OPTIONS = [
   { value: 'per-game', label: 'Per game' },
   { value: 'shared', label: 'Shared (default)' },
 ];
+const CLOUD_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'auto', label: 'Auto' },
+];
 
 /** Linux only: show the Faugus row with install status. */
 async function renderFaugusSetting(cfg) {
   const [platform, fg] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.faugusStatus()]);
   $('cfg-faugus-row').hidden = platform !== 'linux';
   $('cfg-faugusprefix-row').hidden = platform !== 'linux';
+  $('cfg-cloud-row').hidden = platform !== 'linux';
   if (platform !== 'linux') return;
+  setDropdownValue('cfg-cloud', cfg.cloudSaves || 'off');
+  $('cfg-cloud-hint').textContent = cfg.cloudSaves === 'auto'
+    ? (cfg.faugusPrefix === 'shared' ? 'Needs Prefix: Per game' : 'Restore before Play, upload after — per-game prefixes only')
+    : 'Manual upload/download in Folders…';
   setDropdownValue('cfg-faugus', cfg.faugus || 'auto');
   setDropdownValue('cfg-faugusprefix', cfg.faugusPrefix || 'per-game');
   $('cfg-faugusprefix-hint').textContent = cfg.faugusPrefix === 'shared'
@@ -1529,6 +1634,7 @@ function anyModalOpen() {
 
 function gpBack() {
   closeExePicker();
+  closeSyncsModal();
   closeFoldersModal();
   closeDetail();
   closeSettings();
@@ -1606,6 +1712,8 @@ initDropdown('cfg-faugus', async (value) => { renderFaugusSetting(await window.r
 setDropdownOptions('cfg-faugus', FAUGUS_OPTIONS, 'auto');
 initDropdown('cfg-faugusprefix', async (value) => { renderFaugusSetting(await window.r2sd.setConfig({ faugusPrefix: value })); });
 setDropdownOptions('cfg-faugusprefix', FAUGUS_PREFIX_OPTIONS, 'per-game');
+initDropdown('cfg-cloud', async (value) => { renderFaugusSetting(await window.r2sd.setConfig({ cloudSaves: value })); });
+setDropdownOptions('cfg-cloud', CLOUD_OPTIONS, 'off');
 setDropdownOptions('cfg-uiscale', UI_SCALE_OPTIONS, 'auto');
 window.r2sd.onUiScaleChanged(renderUiScale); // keyboard shortcuts change it too
 $('btn-add-self-steam').addEventListener('click', async () => {
@@ -1708,6 +1816,24 @@ $('btn-shortcut').addEventListener('click', () => state.detailRom && openExePick
 $('btn-folders').addEventListener('click', () => state.detailRom && openFoldersModal(state.detailRom));
 $('folders-close').addEventListener('click', closeFoldersModal);
 $('folders-backdrop').addEventListener('click', closeFoldersModal);
+$('syncs-close').addEventListener('click', closeSyncsModal);
+$('syncs-backdrop').addEventListener('click', closeSyncsModal);
+$('syncs-include').addEventListener('change', async (e) => {
+  if (!syncsCtx) return;
+  await window.r2sd.setIncludeConfig(syncsCtx.rom.id, e.target.checked);
+  await renderSyncs();
+});
+$('syncs-patterns-save').addEventListener('click', async () => {
+  const patterns = $('syncs-patterns').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  await window.r2sd.setSaveExcludes(patterns);
+  toast('Config-file patterns saved', 'success');
+  await renderSyncs();
+});
+$('syncs-patterns-reset').addEventListener('click', async () => {
+  await window.r2sd.setSaveExcludes(null);
+  toast('Config-file patterns reset to defaults', 'success');
+  await renderSyncs();
+});
 $('exe-cancel').addEventListener('click', closeExePicker);
 $('exe-backdrop').addEventListener('click', closeExePicker);
 $('installpath-cancel').addEventListener('click', closeInstallPathPicker);
@@ -1747,6 +1873,7 @@ document.addEventListener('keydown', (e) => {
     closeAllDropdowns();
     closeExePicker();
     closeInstallPathPicker();
+    closeSyncsModal();
     closeFoldersModal();
     closeDetail();
     closeSettings();

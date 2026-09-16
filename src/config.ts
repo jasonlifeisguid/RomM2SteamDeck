@@ -15,6 +15,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { normalizeBaseUrl } from './romm';
 import { normalizeUiScale, UiScale } from './device';
+import { DEFAULT_CONFIG_EXCLUDES } from './saves';
 
 export interface PlatformSetup {
   folder: string;        // destination for standard (non-extracted) downloads
@@ -36,6 +37,9 @@ interface StoredConfig {
   faugus: 'auto' | 'off'; // Linux: Play a .exe through Faugus Launcher when installed
   faugusPrefix: 'per-game' | 'shared'; // register each game in Faugus (own prefix) or use its shared default prefix
   installedOnly: boolean; // library shows only games present on disk
+  cloudSaves: 'off' | 'auto'; // sync per-game prefix saves with RomM around Play
+  saveExcludes: string[];     // config-file patterns kept out of save backups/sync
+  rommDeviceId: string;       // this machine's RomM device id ('' until registered)
 }
 
 export interface PublicConfig {
@@ -55,12 +59,16 @@ export interface PublicConfig {
   faugus: 'auto' | 'off';
   faugusPrefix: 'per-game' | 'shared';
   installedOnly: boolean;
+  cloudSaves: 'off' | 'auto';
+  saveExcludes: string[];
+  rommDeviceId: string;
 }
 
 const DEFAULTS: StoredConfig = {
   baseUrl: '', username: '', passwordEncrypted: '', theme: 'oled-limited', view: 'grid',
   pinnedPlatforms: [], platforms: {}, basePath: '', stagingPath: '', uiScale: 'auto', faugus: 'auto',
   installedOnly: false, faugusPrefix: 'per-game',
+  cloudSaves: 'off', saveExcludes: DEFAULT_CONFIG_EXCLUDES, rommDeviceId: '',
 };
 
 // Overridable so modules that read config can run under plain Node in tests.
@@ -171,6 +179,9 @@ export function getPublicConfig(): PublicConfig {
     faugus: stored.faugus === 'off' ? 'off' : 'auto',
     faugusPrefix: stored.faugusPrefix === 'shared' ? 'shared' : 'per-game',
     installedOnly: stored.installedOnly === true,
+    cloudSaves: stored.cloudSaves === 'auto' ? 'auto' : 'off',
+    saveExcludes: Array.isArray(stored.saveExcludes) ? stored.saveExcludes.filter((p) => typeof p === 'string') : DEFAULT_CONFIG_EXCLUDES,
+    rommDeviceId: typeof stored.rommDeviceId === 'string' ? stored.rommDeviceId : '',
   };
 }
 
@@ -188,6 +199,7 @@ export function setConfig(update: {
   baseUrl?: string; username?: string; password?: string; theme?: string; view?: string;
   pinnedPlatforms?: number[]; platforms?: Record<string, PlatformSetup>;
   basePath?: string; stagingPath?: string; uiScale?: string; faugus?: string; faugusPrefix?: string; installedOnly?: boolean;
+  cloudSaves?: string; saveExcludes?: string[]; rommDeviceId?: string;
 }): PublicConfig {
   // Copy before mutating so a failed write can't leave the memo half-updated.
   const stored: StoredConfig = { ...load().stored };
@@ -201,6 +213,9 @@ export function setConfig(update: {
   if (update.faugus !== undefined) stored.faugus = update.faugus === 'off' ? 'off' : 'auto';
   if (update.installedOnly !== undefined) stored.installedOnly = Boolean(update.installedOnly);
   if (update.faugusPrefix !== undefined) stored.faugusPrefix = update.faugusPrefix === 'shared' ? 'shared' : 'per-game';
+  if (update.cloudSaves !== undefined) stored.cloudSaves = update.cloudSaves === 'auto' ? 'auto' : 'off';
+  if (update.saveExcludes !== undefined) stored.saveExcludes = (Array.isArray(update.saveExcludes) ? update.saveExcludes : []).map((p) => String(p).trim()).filter(Boolean);
+  if (update.rommDeviceId !== undefined) stored.rommDeviceId = String(update.rommDeviceId);
   if (update.pinnedPlatforms !== undefined) {
     stored.pinnedPlatforms = (Array.isArray(update.pinnedPlatforms) ? update.pinnedPlatforms : [])
       .filter((id) => Number.isInteger(id));

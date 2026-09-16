@@ -274,6 +274,8 @@ export interface LaunchResult {
   registered?: boolean;
   /** Per-game mode was requested but registration was refused; launched in the shared prefix instead. */
   registerError?: string;
+  /** onExit will fire when the game closes (only for `--game` launches). */
+  exitTracked?: boolean;
 }
 
 /**
@@ -286,7 +288,7 @@ export function launchWithFaugus(
   exePath: string,
   install: FaugusInstall,
   env: Env = realEnv(),
-  opts: { perGame?: boolean; title?: string; coverPng?: string } = {}
+  opts: { perGame?: boolean; title?: string; coverPng?: string; onExit?: (code: number | null) => void } = {}
 ): LaunchResult {
   let registered = false;
   let registerError: string | undefined;
@@ -303,7 +305,11 @@ export function launchWithFaugus(
       stdio: 'ignore',
     });
     child.unref();
-    return { ok: true, via: install.method, gameId: launch.gameId, registered, registerError };
+    // `--game` runs Faugus's runner in the foreground of this child, which
+    // waits for the game — so 'exit' means the game closed. (The bare-exe path
+    // returns immediately after handing off; exit tracking only works per-game.)
+    if (opts.onExit && launch.gameId) child.on('exit', (code) => opts.onExit!(code));
+    return { ok: true, via: install.method, gameId: launch.gameId, registered, registerError, exitTracked: Boolean(opts.onExit && launch.gameId) };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
