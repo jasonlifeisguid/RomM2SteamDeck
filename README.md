@@ -96,8 +96,9 @@ Windows games (RomM's *Windows* platform, or any platform you've set to **Extrac
 
 Install [Faugus Launcher](https://github.com/Faugus/faugus-launcher) as a system package, as an AppImage in `~/Applications`, or as the Flatpak. When it's present, **▶ Play** hands the `.exe` to Faugus, which runs it through UMU/Proton with your Faugus default runner. No Steam step, no per-game setup.
 
-- If you've already added the game inside Faugus, R2SD launches that entry instead, so its own prefix and Proton choice apply. R2SD only reads Faugus's game list; it never writes it.
-- Turn this off in **Settings → Display → Faugus** if you'd rather always go through Steam.
+- **Each game gets its own prefix.** On first Play, R2SD adds the game to Faugus's library exactly as Faugus's own *Add game* dialog would — title, executable, its own prefix under `~/Faugus/<game>/`, your Faugus default runner, and the RomM cover as artwork — then launches that entry. Saves and configs stay isolated per game (see *Finding your saves* below), and the game shows up in Faugus too. Games you had already added in Faugus are reused, matched by executable. Prefer one shared prefix for everything? **Settings → Display → Prefix → Shared**.
+- R2SD only adds entries while Faugus's window is closed (Faugus keeps its list in memory and would overwrite the addition on its next save). If it's open, Play runs the game in the shared prefix once and tells you.
+- Turn Faugus routing off in **Settings → Display → Faugus** if you'd rather always go through Steam.
 
 ### Route B — Add to Steam (Proton via Steam)
 
@@ -112,6 +113,8 @@ Open the game's **Add to Steam / Shortcut…** dialog, pick the executable, and 
 ### Finding your saves and configs
 
 A Windows game under Proton keeps its Documents, Saved Games and AppData inside a Wine prefix, which is hard to locate by hand. Open a downloaded game's **Folders…** (detail view or right-click) and R2SD lists the install folder plus every prefix the game can run in — Faugus's per-game prefix, Faugus's default prefix, and Steam's `compatdata` prefix — with one-click buttons for **User profile, Documents, Saved Games, AppData\Roaming, AppData\Local, AppData\LocalLow** and **Drive C:**. Only folders that exist are shown, so a game that hasn't been run yet simply says so. On Windows the same dialog opens the real user folders.
+
+**Moving saves between devices.** Each Linux prefix in that dialog has **Back up saves…** and **Restore saves…**. Back up zips the prefix's Documents, Saved Games and AppData (minus Windows temp and shell folders) into `<game> saves <date>.zip` in a folder you pick — an SD card, a NAS share, a synced folder. Restore extracts such a zip into the prefix, overwriting same-named files and leaving everything else alone. The zip only ever contains those save folders, so restoring a backup made from Faugus's shared `default` prefix into a game's own prefix is also how you migrate saves after switching to per-game prefixes.
 
 ### Desktop shortcuts
 

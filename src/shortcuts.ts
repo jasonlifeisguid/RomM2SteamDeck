@@ -77,6 +77,10 @@ export interface LaunchResult {
   via?: 'faugus';
   faugusMethod?: faugus.FaugusMethod;
   faugusGameId?: string | null;
+  /** A new Faugus entry with its own prefix was created for this launch. */
+  faugusRegistered?: boolean;
+  /** Per-game prefix was wanted but couldn't be set up; ran in the shared prefix. */
+  faugusRegisterError?: string;
 }
 
 /**
@@ -85,16 +89,21 @@ export interface LaunchResult {
  * enabled; otherwise the user is pointed at Add-to-Steam. macOS has no
  * Proton path, so .exe is always refused there.
  */
-export function launchGame(exePath: string, opts: { faugusEnabled?: boolean } = {}): LaunchResult {
+export function launchGame(
+  exePath: string,
+  opts: { faugusEnabled?: boolean; faugusPerGame?: boolean; title?: string; coverPng?: string } = {}
+): LaunchResult {
   if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
   const isExe = exePath.toLowerCase().endsWith('.exe');
 
   if (process.platform === 'linux' && isExe) {
     const install = opts.faugusEnabled === false ? null : faugus.findFaugus();
     if (install) {
-      const res = faugus.launchWithFaugus(exePath, install);
+      const res = faugus.launchWithFaugus(exePath, install, undefined, {
+        perGame: opts.faugusPerGame !== false, title: opts.title, coverPng: opts.coverPng,
+      });
       return res.ok
-        ? { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId }
+        ? { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId, faugusRegistered: res.registered, faugusRegisterError: res.registerError }
         : { ok: false, error: `Faugus Launcher failed to start: ${res.error}` };
     }
     return {

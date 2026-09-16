@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, net, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeImage, net, protocol, shell } from 'electron';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -14,6 +14,7 @@ import { isInsideFolder } from './fsutil';
 import { isSteamDeckCached, zoomForScale, stepScale, normalizeUiScale } from './device';
 import * as faugus from './faugus';
 import * as prefixes from './prefixes';
+import * as saves from './saves';
 
 // Cover art and screenshots are served to the renderer over a private scheme
 // that maps only onto the covers cache directory, so the renderer's CSP no
@@ -469,7 +470,7 @@ function registerIpc(): void {
     const exe = exeForRom(romId, exePath);
     return exe ? downloads.setDefaultExe(romId, exe) : false;
   });
-  ipcMain.handle('game:launch', (_e, romId: number, exePath?: string) => {
+  ipcMain.handle('game:launch', async (_e, romId: number, exePath?: string, coverPath?: string) => {
     if (exePath) {
       const exe = exeForRom(romId, exePath);
       if (!exe) return { ok: false, error: EXE_OUTSIDE_GAME };
@@ -478,7 +479,25 @@ function registerIpc(): void {
     const rec = downloads.findDownload(romId);
     const target = exePath || rec?.defaultExe;
     if (!target) return { ok: false, error: 'No executable selected for this game yet' };
-    return shortcuts.launchGame(target, { faugusEnabled: config.getPublicConfig().faugus !== 'off' });
+    const cfg = config.getPublicConfig();
+    // Faugus wants a PNG cover in its own covers dir; RomM covers are usually JPEG.
+    let coverPng: string | undefined;
+    if (process.platform === 'linux' && cfg.faugusPrefix !== 'shared' && coverPath) {
+      try {
+        const src = await ensureAsset(romId, coverPath);
+        if (src) {
+          const png = path.join(cache.coversDir(), `${romId}-faugus.png`);
+          if (!fs.existsSync(png)) fs.writeFileSync(png, nativeImage.createFromPath(src).toPNG());
+          coverPng = png;
+        }
+      } catch { /* cosmetic */ }
+    }
+    return shortcuts.launchGame(target, {
+      faugusEnabled: cfg.faugus !== 'off',
+      faugusPerGame: cfg.faugusPrefix !== 'shared',
+      title: rec?.romName,
+      coverPng,
+    });
   });
 
   // ── Game folders: install dir + Windows-side user folders (saves/configs) ──
@@ -507,6 +526,35 @@ function registerIpc(): void {
     if (typeof target !== 'string' || !allowed.has(target)) return { ok: false, error: 'Not a folder of this game' };
     const err = await shell.openPath(target); // '' on success
     return err ? { ok: false, error: err } : { ok: true };
+  });
+
+  // ── Save backup / restore (Linux prefixes only) ──────────────────────────
+  // The prefix root must be one gameFolders() resolved for this rom.
+  const prefixRootFor = (romId: number, root: string): string | null => {
+    const info = gameFolders(romId);
+    const p = info.prefixes.find((x) => x.root === root && x.source !== 'windows');
+    return p ? p.root : null;
+  };
+  ipcMain.handle('saves:backup', async (_e, romId: number, prefixRoot: string) => {
+    const root = prefixRootFor(romId, prefixRoot);
+    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const rec = downloads.findDownload(romId);
+    const picked = await dialog.showOpenDialog(mainWindow!, { title: 'Folder to save the backup in', properties: ['openDirectory', 'createDirectory'] });
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, cancelled: true };
+    return saves.backupSaves(root, picked.filePaths[0], rec?.romName || 'game');
+  });
+  ipcMain.handle('saves:restore', async (_e, romId: number, prefixRoot: string) => {
+    const root = prefixRootFor(romId, prefixRoot);
+    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const picked = await dialog.showOpenDialog(mainWindow!, { title: 'Choose a saves backup (.zip)', properties: ['openFile'], filters: [{ name: 'Save backups', extensions: ['zip'] }] });
+    if (picked.canceled || !picked.filePaths[0]) return { ok: false, cancelled: true };
+    const confirm = await dialog.showMessageBox(mainWindow!, {
+      type: 'warning', buttons: ['Restore', 'Cancel'], defaultId: 1, cancelId: 1,
+      message: 'Restore saves into this prefix?',
+      detail: `Files from the backup will overwrite same-named files in\n${root}\n\nOther files are left alone.`,
+    });
+    if (confirm.response !== 0) return { ok: false, cancelled: true };
+    return saves.restoreSaves(root, picked.filePaths[0]);
   });
 
   // Faugus Launcher (Linux): is it installed, and is Play routed through it?

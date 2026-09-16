@@ -3,17 +3,24 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path').posix; // the module is Linux-only and uses POSIX paths
 
-const { findFaugus, findRegisteredGameId, buildLaunch, gamesJsonPath, FLATPAK_APP_ID } = require('../dist/faugus.js');
+const { findFaugus, findRegisteredGameId, buildLaunch, gamesJsonPath, FLATPAK_APP_ID, formatTitle, readFaugusConfig, registerGame } = require('../dist/faugus.js');
 
 const HOME = '/home/deck';
-function fakeEnv({ files = [], dirs = {}, contents = {}, platform = 'linux', pathDirs = ['/usr/bin', '/usr/local/bin'] } = {}) {
+function fakeEnv({ files = [], dirs = {}, contents = {}, platform = 'linux', pathDirs = ['/usr/bin', '/usr/local/bin'], uiRunning = false } = {}) {
   const set = new Set(files);
-  return {
-    platform, homedir: HOME, pathDirs,
-    exists: (p) => set.has(p),
+  const written = {};   // path -> data (writes are recorded, and become readable)
+  const copied = [];    // [from, to]
+  const env = {
+    platform, homedir: HOME, pathDirs, written, copied,
+    exists: (p) => set.has(p) || p in contents || p in written,
     readdir: (d) => dirs[d] || [],
-    readFile: (p) => { if (!(p in contents)) throw new Error('ENOENT'); return contents[p]; },
+    readFile: (p) => { if (p in written) return written[p]; if (!(p in contents)) throw new Error('ENOENT'); return contents[p]; },
+    writeFile: (p, data) => { written[p] = data; },
+    copyFile: (from, to) => { copied.push([from, to]); written[to] = env.readFile(from); },
+    mkdirp: () => {},
+    faugusUiRunning: () => uiRunning,
   };
+  return env;
 }
 const EXE = '/home/deck/Games/Doom/doom.exe';
 const GAMES_JSON = path.join(HOME, '.local/share/faugus-launcher/games.json');
@@ -82,3 +89,67 @@ test('buildLaunch: registered game uses --game <id> (per-game prefix/Proton appl
   assert.deepEqual(buildLaunch({ method: 'flatpak', target: FLATPAK_APP_ID }, EXE, env).args,
     ['run', FLATPAK_APP_ID, '--game', 'doom-abc123']);
 });
+
+// ── registration (per-game prefixes) ──────────────────────────────────────
+
+const CFG = path.join(HOME, '.config/faugus-launcher/config.json');
+
+test('formatTitle mirrors Faugus format_title()', () => {
+  assert.equal(formatTitle("Assassin's Creed Shadows"), 'assassins-creed-shadows');
+  assert.equal(formatTitle('  Stellar   Blade '), 'stellar-blade');
+  assert.equal(formatTitle('METAL GEAR SOLID 4 - MCV'), 'metal-gear-solid-4---mcv');
+  assert.equal(formatTitle('The Simpsons: Hit & Run'), 'the-simpsons-hit-run');
+  assert.equal(formatTitle('Pokémon'), 'pokémon');
+});
+
+test('readFaugusConfig: defaults, then quoted/unquoted values from config.json', () => {
+  assert.deepEqual(readFaugusConfig(fakeEnv()), { prefixesDir: '/home/deck/Faugus', defaultRunner: 'Proton-CachyOS Latest' });
+  const env = fakeEnv({ contents: { [CFG]: JSON.stringify({ 'default-prefix': '"~/Prefixes"', 'default-runner': 'GE-Proton10-4' }) } });
+  assert.deepEqual(readFaugusConfig(env), { prefixesDir: '/home/deck/Prefixes', defaultRunner: 'GE-Proton10-4' });
+});
+
+test('registerGame creates a minimal entry with its own prefix and keeps a backup', () => {
+  const existing = [{ gameid: 'maneaters', title: 'Maneaters', path: '/g/Maneater/Maneater.exe', prefix: '~/Faugus/maneaters', runner: 'Proton-CachyOS Latest', playtime: 12 }];
+  const env = fakeEnv({ contents: { [GAMES_JSON]: JSON.stringify(existing), [CFG]: JSON.stringify({ 'default-prefix': '/home/deck/Faugus', 'default-runner': 'Proton-CachyOS Latest' }), '/covers/1.png': 'PNG' } });
+  const res = registerGame({ title: "Assassin's Creed Shadows", exePath: '/g/ACS/ACShadows.exe', coverPng: '/covers/1.png' }, env);
+  assert.deepEqual(res, { ok: true, gameId: 'assassins-creed-shadows', prefix: '/home/deck/Faugus/assassins-creed-shadows', existing: false });
+  const out = JSON.parse(env.written[GAMES_JSON]);
+  assert.equal(out.length, 2);
+  assert.deepEqual(out[0], existing[0], 'existing entries untouched (playtime kept)');
+  assert.deepEqual(out[1], {
+    gameid: 'assassins-creed-shadows', title: "Assassin's Creed Shadows", path: '/g/ACS/ACShadows.exe',
+    prefix: '/home/deck/Faugus/assassins-creed-shadows', runner: 'Proton-CachyOS Latest',
+    cover: path.join(HOME, '.local/share/faugus-launcher/covers/assassins-creed-shadows.png'),
+  });
+  assert.ok(env.written[GAMES_JSON + '.r2sd-bak'], 'previous games.json backed up');
+  assert.ok(env.written[GAMES_JSON].endsWith('\n'));
+});
+
+test('registerGame reuses an entry that already points at the exe (by path, ~ expanded)', () => {
+  const env = fakeEnv({ contents: { [GAMES_JSON]: JSON.stringify([{ gameid: 'maneaters', title: 'Maneaters', path: '~/G/Maneater/Maneater.exe', prefix: '~/Faugus/maneaters' }]) } });
+  const res = registerGame({ title: 'Maneater', exePath: '/home/deck/G/Maneater/Maneater.exe' }, env);
+  assert.deepEqual(res, { ok: true, gameId: 'maneaters', prefix: '/home/deck/Faugus/maneaters', existing: true });
+  assert.equal(env.written[GAMES_JSON], undefined, 'nothing written');
+});
+
+test('registerGame de-duplicates the game id against a different game with the same title', () => {
+  const env = fakeEnv({ contents: { [GAMES_JSON]: JSON.stringify([{ gameid: 'doom', title: 'Doom', path: '/old/doom.exe', prefix: '~/Faugus/doom' }]) } });
+  const res = registerGame({ title: 'Doom', exePath: '/new/doom.exe' }, env);
+  assert.equal(res.gameId, 'doom-2');
+  assert.equal(res.prefix, '/home/deck/Faugus/doom-2');
+});
+
+test('registerGame starts a games.json when Faugus has none yet', () => {
+  const env = fakeEnv();
+  const res = registerGame({ title: 'Quake', exePath: '/g/quake.exe' }, env);
+  assert.equal(res.ok, true);
+  assert.deepEqual(JSON.parse(env.written[GAMES_JSON]).map((g) => g.gameid), ['quake']);
+});
+
+test('registerGame refuses while the Faugus window is open, and on a malformed file', () => {
+  const open = registerGame({ title: 'Quake', exePath: '/g/quake.exe' }, fakeEnv({ uiRunning: true }));
+  assert.equal(open.ok, false); assert.match(open.error, /Faugus Launcher is open/);
+  const bad = registerGame({ title: 'Quake', exePath: '/g/quake.exe' }, fakeEnv({ contents: { [GAMES_JSON]: '{"not":"a list"}' } }));
+  assert.equal(bad.ok, false); assert.match(bad.error, /not a list/);
+});
+

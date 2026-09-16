@@ -51,7 +51,9 @@ contextBridge.exposeInMainWorld('r2sd', {
     ipcRenderer.invoke('steam:add', romId, exePath, gameName, proton, coverPath),
   addSelfToSteam: () => ipcRenderer.invoke('steam:addSelf'),
   setDefaultExe: (romId: number, exePath: string) => ipcRenderer.invoke('game:setDefaultExe', romId, exePath),
-  launchGame: (romId: number, exePath?: string) => ipcRenderer.invoke('game:launch', romId, exePath),
+  launchGame: (romId: number, exePath?: string, coverPath?: string) => ipcRenderer.invoke('game:launch', romId, exePath, coverPath),
+  backupSaves: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:backup', romId, prefixRoot),
+  restoreSaves: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:restore', romId, prefixRoot),
 
   // Background-refresh + progress events
   onPlatformsUpdated: (cb: (payload: unknown) => void) =>

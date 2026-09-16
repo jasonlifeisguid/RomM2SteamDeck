@@ -34,6 +34,7 @@ interface StoredConfig {
   stagingPath: string; // where archives land before extraction ('' = extract destination)
   uiScale: UiScale;    // renderer zoom: 'auto' (Deck → 140%, else 100%) or an explicit percent
   faugus: 'auto' | 'off'; // Linux: Play a .exe through Faugus Launcher when installed
+  faugusPrefix: 'per-game' | 'shared'; // register each game in Faugus (own prefix) or use its shared default prefix
   installedOnly: boolean; // library shows only games present on disk
 }
 
@@ -52,13 +53,14 @@ export interface PublicConfig {
   stagingPath: string;
   uiScale: UiScale;
   faugus: 'auto' | 'off';
+  faugusPrefix: 'per-game' | 'shared';
   installedOnly: boolean;
 }
 
 const DEFAULTS: StoredConfig = {
   baseUrl: '', username: '', passwordEncrypted: '', theme: 'oled-limited', view: 'grid',
   pinnedPlatforms: [], platforms: {}, basePath: '', stagingPath: '', uiScale: 'auto', faugus: 'auto',
-  installedOnly: false,
+  installedOnly: false, faugusPrefix: 'per-game',
 };
 
 // Overridable so modules that read config can run under plain Node in tests.
@@ -167,6 +169,7 @@ export function getPublicConfig(): PublicConfig {
     stagingPath: stored.stagingPath || '',
     uiScale: normalizeUiScale(stored.uiScale),
     faugus: stored.faugus === 'off' ? 'off' : 'auto',
+    faugusPrefix: stored.faugusPrefix === 'shared' ? 'shared' : 'per-game',
     installedOnly: stored.installedOnly === true,
   };
 }
@@ -184,7 +187,7 @@ export function isConfigured(): boolean {
 export function setConfig(update: {
   baseUrl?: string; username?: string; password?: string; theme?: string; view?: string;
   pinnedPlatforms?: number[]; platforms?: Record<string, PlatformSetup>;
-  basePath?: string; stagingPath?: string; uiScale?: string; faugus?: string; installedOnly?: boolean;
+  basePath?: string; stagingPath?: string; uiScale?: string; faugus?: string; faugusPrefix?: string; installedOnly?: boolean;
 }): PublicConfig {
   // Copy before mutating so a failed write can't leave the memo half-updated.
   const stored: StoredConfig = { ...load().stored };
@@ -197,6 +200,7 @@ export function setConfig(update: {
   if (update.uiScale !== undefined) stored.uiScale = normalizeUiScale(update.uiScale);
   if (update.faugus !== undefined) stored.faugus = update.faugus === 'off' ? 'off' : 'auto';
   if (update.installedOnly !== undefined) stored.installedOnly = Boolean(update.installedOnly);
+  if (update.faugusPrefix !== undefined) stored.faugusPrefix = update.faugusPrefix === 'shared' ? 'shared' : 'per-game';
   if (update.pinnedPlatforms !== undefined) {
     stored.pinnedPlatforms = (Array.isArray(update.pinnedPlatforms) ? update.pinnedPlatforms : [])
       .filter((id) => Number.isInteger(id));

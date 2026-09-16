@@ -1086,7 +1086,10 @@ async function setDefaultFromPicker() {
 function launchToast(rom, res) {
   if (res.error) { toast(res.error, 'error'); return; }
   const name = rom.name || rom.fs_name;
-  toast(res.via === 'faugus' ? `Launching ${name} via Faugus Launcher…` : `Launching ${name}…`, 'success');
+  if (res.via !== 'faugus') { toast(`Launching ${name}…`, 'success'); return; }
+  if (res.faugusRegistered) toast(`Added ${name} to Faugus with its own prefix — launching…`, 'success');
+  else toast(`Launching ${name} via Faugus Launcher…`, 'success');
+  if (res.faugusRegisterError) toast(`${res.faugusRegisterError}. Ran in the shared prefix this time.`, 'error');
 }
 
 async function playFromPicker() {
@@ -1094,7 +1097,7 @@ async function playFromPicker() {
   const rom = exePickerRom;
   const exe = exeSelected;
   closeExePicker();
-  const res = await window.r2sd.launchGame(rom.id, exe.path); // also sets as default
+  const res = await window.r2sd.launchGame(rom.id, exe.path, rom.path_cover_large || rom.path_cover_small || ''); // also sets as default
   launchToast(rom, res);
   await reloadDownloads();
   if (state.detailRom?.id === rom.id) refreshDetailActions();
@@ -1104,7 +1107,7 @@ async function playFromPicker() {
 async function playGame(rom) {
   const rec = state.downloads.get(rom.id);
   if (rec && rec.defaultExe) {
-    launchToast(rom, await window.r2sd.launchGame(rom.id));
+    launchToast(rom, await window.r2sd.launchGame(rom.id, undefined, rom.path_cover_large || rom.path_cover_small || ''));
   } else {
     openExePicker(rom); // no default yet — choose an exe, then Play from the picker
   }
@@ -1149,7 +1152,7 @@ async function openFoldersModal(rom) {
   const info = await window.r2sd.gameFolders(rom.id);
   if (foldersRom?.id !== rom.id) return;
   list.innerHTML = '';
-  const addGroup = (label, root, items) => {
+  const addGroup = (label, root, items, saveActions = false) => {
     const g = document.createElement('div');
     const l = document.createElement('div'); l.className = 'folders-group-label'; l.textContent = label;
     g.appendChild(l);
@@ -1167,10 +1170,36 @@ async function openFoldersModal(rom) {
       row.appendChild(b);
     }
     g.appendChild(row);
+    if (saveActions) {
+      const actions = document.createElement('div');
+      actions.className = 'folders-group-actions';
+      const mk = (label, title, fn) => {
+        const b = document.createElement('button');
+        b.className = 'secondary'; b.textContent = label; b.title = title;
+        b.addEventListener('click', async () => {
+          b.disabled = true;
+          try { await fn(); } finally { b.disabled = false; }
+        });
+        actions.appendChild(b);
+      };
+      mk('Back up saves…', 'Zip this prefix\'s Documents / Saved Games / AppData to a folder you choose', async () => {
+        const res = await window.r2sd.backupSaves(rom.id, root);
+        if (res.cancelled) return;
+        if (res.error) toast(res.error, 'error');
+        else toast(`Saves backed up: ${res.file}`, 'success');
+      });
+      mk('Restore saves…', 'Extract a saves backup (.zip) into this prefix, overwriting same-named files', async () => {
+        const res = await window.r2sd.restoreSaves(rom.id, root);
+        if (res.cancelled) return;
+        if (res.error) toast(res.error, 'error');
+        else toast(`Saves restored (${res.folders.join(', ')})`, 'success');
+      });
+      g.appendChild(actions);
+    }
     list.appendChild(g);
   };
   if (info.gameFolder) addGroup('Game', null, [{ label: 'Game folder (install)', path: info.gameFolder }]);
-  for (const p of info.prefixes) if (p.folders.length) addGroup(p.label, p.root, p.folders);
+  for (const p of info.prefixes) if (p.folders.length) addGroup(p.label, p.root, p.folders, p.source !== 'windows');
   if (!info.gameFolder && !info.prefixes.length) {
     list.innerHTML = '<p class="folders-empty">No folders found yet.</p>';
   } else if (!info.prefixes.length) {
@@ -1372,13 +1401,22 @@ const FAUGUS_OPTIONS = [
   { value: 'auto', label: 'Auto' },
   { value: 'off', label: 'Off' },
 ];
+const FAUGUS_PREFIX_OPTIONS = [
+  { value: 'per-game', label: 'Per game' },
+  { value: 'shared', label: 'Shared (default)' },
+];
 
 /** Linux only: show the Faugus row with install status. */
 async function renderFaugusSetting(cfg) {
   const [platform, fg] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.faugusStatus()]);
   $('cfg-faugus-row').hidden = platform !== 'linux';
+  $('cfg-faugusprefix-row').hidden = platform !== 'linux';
   if (platform !== 'linux') return;
   setDropdownValue('cfg-faugus', cfg.faugus || 'auto');
+  setDropdownValue('cfg-faugusprefix', cfg.faugusPrefix || 'per-game');
+  $('cfg-faugusprefix-hint').textContent = cfg.faugusPrefix === 'shared'
+    ? 'All games share ~/Faugus/default'
+    : 'Each game gets its own prefix and appears in Faugus\'s library';
   const how = { binary: 'system package', appimage: 'AppImage', flatpak: 'Flatpak' }[fg.method] || '';
   $('cfg-faugus-hint').textContent = !fg.found
     ? 'Not installed — Play will point you to Add to Steam'
@@ -1566,6 +1604,8 @@ $('btn-quit').addEventListener('click', () => { window.r2sd.quitApp(); });
 initDropdown('cfg-uiscale', async (value) => { renderUiScale(await window.r2sd.setUiScale(value)); });
 initDropdown('cfg-faugus', async (value) => { renderFaugusSetting(await window.r2sd.setConfig({ faugus: value })); });
 setDropdownOptions('cfg-faugus', FAUGUS_OPTIONS, 'auto');
+initDropdown('cfg-faugusprefix', async (value) => { renderFaugusSetting(await window.r2sd.setConfig({ faugusPrefix: value })); });
+setDropdownOptions('cfg-faugusprefix', FAUGUS_PREFIX_OPTIONS, 'per-game');
 setDropdownOptions('cfg-uiscale', UI_SCALE_OPTIONS, 'auto');
 window.r2sd.onUiScaleChanged(renderUiScale); // keyboard shortcuts change it too
 $('btn-add-self-steam').addEventListener('click', async () => {
