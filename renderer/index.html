@@ -80,7 +80,7 @@
             <button id="btn-dl-cancel" class="secondary" hidden>Cancel</button>
             <button id="btn-play" class="primary" hidden>&#9654; Play</button>
             <button id="btn-shortcut" class="secondary" hidden>Add to Steam&hellip;</button>
-            <button id="btn-folders" class="secondary" hidden title="Open the game folder or its Windows-side saves / config folders">Folders&hellip;</button>
+            <button id="btn-folders" class="secondary" hidden title="Save backup, restore and RomM cloud sync, plus the game folder and its Windows-side save / config folders">Saves &amp; Folders&hellip;</button>
             <button id="btn-dl-delete" class="secondary danger" hidden>Delete from disk</button>
             <span id="detail-dl-status" class="small muted"></span>
           </div>
@@ -167,7 +167,7 @@
   <div id="folders-modal" class="modal" hidden>
     <div class="modal-backdrop" id="folders-backdrop"></div>
     <div class="modal-card exe-card">
-      <h2>Game Folders</h2>
+      <h2>Saves &amp; Folders</h2>
       <p class="small muted mb-10" id="folders-game"></p>
       <div id="folders-list" class="folders-list"></div>
       <div class="modal-actions">
@@ -189,6 +189,16 @@
         <input type="checkbox" id="syncs-include">
         Include config files for this game (its progress lives in .ini / config files)
       </label>
+      <div id="syncs-paths-section" class="syncs-paths" hidden>
+        <div class="small">Save locations for this game <span class="muted">(relative to your user profile, one per line)</span></div>
+        <textarea id="syncs-paths" rows="3" spellcheck="false" placeholder="Documents/My Games/Example&#10;AppData/Local/Example"></textarea>
+        <div class="small muted" id="syncs-paths-note"></div>
+        <div class="modal-actions">
+          <span class="spacer"></span>
+          <button id="syncs-paths-detect" class="secondary" title="Steam-emulator app id next to the exe, then the PCGamingWiki save-location database (downloaded once, refreshed weekly)">Look up</button>
+          <button id="syncs-paths-save" class="secondary">Save locations</button>
+        </div>
+      </div>
       <details class="syncs-patterns">
         <summary class="small muted">Config-file patterns (apply to every game)</summary>
         <textarea id="syncs-patterns" rows="4" spellcheck="false"></textarea>
@@ -294,6 +304,15 @@
             <div class="dropdown-menu" hidden></div>
           </div>
           <span id="cfg-cloud-hint" class="small muted"></span>
+        </div>
+        <div class="settings-row" id="cfg-updates-row">
+          <span class="settings-row-label">Updates</span>
+          <div id="cfg-updates" class="dropdown" data-value="auto" title="Check GitHub for a newer release on startup (never installs anything)">
+            <button type="button" class="dropdown-trigger"><span class="dropdown-label">Auto</span><span class="dropdown-caret">&#9662;</span></button>
+            <div class="dropdown-menu" hidden></div>
+          </div>
+          <button id="btn-check-updates" class="secondary settings-row-btn">Check now</button>
+          <span id="cfg-updates-hint" class="small muted"></span>
         </div>
       </div>
 

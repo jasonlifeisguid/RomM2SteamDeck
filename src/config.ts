@@ -40,6 +40,9 @@ interface StoredConfig {
   cloudSaves: 'off' | 'auto'; // sync per-game prefix saves with RomM around Play
   saveExcludes: string[];     // config-file patterns kept out of save backups/sync
   rommDeviceId: string;       // this machine's RomM device id ('' until registered)
+  updateCheck: 'auto' | 'off'; // ask GitHub for a newer release on startup
+  updateCheckedAt: number;     // last check (ms epoch), so startup checks are at most daily
+  updateSkip: string;          // a version the user chose not to be told about again
 }
 
 export interface PublicConfig {
@@ -62,6 +65,9 @@ export interface PublicConfig {
   cloudSaves: 'off' | 'auto';
   saveExcludes: string[];
   rommDeviceId: string;
+  updateCheck: 'auto' | 'off';
+  updateCheckedAt: number;
+  updateSkip: string;
 }
 
 const DEFAULTS: StoredConfig = {
@@ -69,6 +75,7 @@ const DEFAULTS: StoredConfig = {
   pinnedPlatforms: [], platforms: {}, basePath: '', stagingPath: '', uiScale: 'auto', faugus: 'auto',
   installedOnly: false, faugusPrefix: 'per-game',
   cloudSaves: 'off', saveExcludes: DEFAULT_CONFIG_EXCLUDES, rommDeviceId: '',
+  updateCheck: 'auto', updateCheckedAt: 0, updateSkip: '',
 };
 
 // Overridable so modules that read config can run under plain Node in tests.
@@ -182,6 +189,9 @@ export function getPublicConfig(): PublicConfig {
     cloudSaves: stored.cloudSaves === 'auto' ? 'auto' : 'off',
     saveExcludes: Array.isArray(stored.saveExcludes) ? stored.saveExcludes.filter((p) => typeof p === 'string') : DEFAULT_CONFIG_EXCLUDES,
     rommDeviceId: typeof stored.rommDeviceId === 'string' ? stored.rommDeviceId : '',
+    updateCheck: stored.updateCheck === 'off' ? 'off' : 'auto',
+    updateCheckedAt: typeof stored.updateCheckedAt === 'number' ? stored.updateCheckedAt : 0,
+    updateSkip: typeof stored.updateSkip === 'string' ? stored.updateSkip : '',
   };
 }
 
@@ -200,6 +210,7 @@ export function setConfig(update: {
   pinnedPlatforms?: number[]; platforms?: Record<string, PlatformSetup>;
   basePath?: string; stagingPath?: string; uiScale?: string; faugus?: string; faugusPrefix?: string; installedOnly?: boolean;
   cloudSaves?: string; saveExcludes?: string[]; rommDeviceId?: string;
+  updateCheck?: string; updateCheckedAt?: number; updateSkip?: string;
 }): PublicConfig {
   // Copy before mutating so a failed write can't leave the memo half-updated.
   const stored: StoredConfig = { ...load().stored };
@@ -216,6 +227,9 @@ export function setConfig(update: {
   if (update.cloudSaves !== undefined) stored.cloudSaves = update.cloudSaves === 'auto' ? 'auto' : 'off';
   if (update.saveExcludes !== undefined) stored.saveExcludes = (Array.isArray(update.saveExcludes) ? update.saveExcludes : []).map((p) => String(p).trim()).filter(Boolean);
   if (update.rommDeviceId !== undefined) stored.rommDeviceId = String(update.rommDeviceId);
+  if (update.updateCheck !== undefined) stored.updateCheck = update.updateCheck === 'off' ? 'off' : 'auto';
+  if (update.updateCheckedAt !== undefined) stored.updateCheckedAt = Number(update.updateCheckedAt) || 0;
+  if (update.updateSkip !== undefined) stored.updateSkip = String(update.updateSkip);
   if (update.pinnedPlatforms !== undefined) {
     stored.pinnedPlatforms = (Array.isArray(update.pinnedPlatforms) ? update.pinnedPlatforms : [])
       .filter((id) => Number.isInteger(id));

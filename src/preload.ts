@@ -59,6 +59,13 @@ contextBridge.exposeInMainWorld('r2sd', {
   savesPreview: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:preview', romId, prefixRoot),
   setIncludeConfig: (romId: number, include: boolean) => ipcRenderer.invoke('saves:setIncludeConfig', romId, include),
   setSaveExcludes: (patterns: string[] | null) => ipcRenderer.invoke('saves:setExcludes', patterns),
+  setSavePaths: (romId: number, paths: string[]) => ipcRenderer.invoke('saves:setPaths', romId, paths),
+  detectSavePaths: (romId: number) => ipcRenderer.invoke('saves:detectPaths', romId),
+  checkForUpdate: () => ipcRenderer.invoke('update:check'),
+  skipUpdate: (version: string) => ipcRenderer.invoke('update:skip', version),
+  openReleasePage: (url?: string) => ipcRenderer.invoke('update:open', url),
+  onUpdateAvailable: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('update:available', (_e, payload) => cb(payload)),
   onCloudEvent: (cb: (payload: unknown) => void) =>
     ipcRenderer.on('cloud:event', (_e, payload) => cb(payload)),
   restoreSaves: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:restore', romId, prefixRoot),

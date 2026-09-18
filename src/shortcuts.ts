@@ -92,9 +92,45 @@ export interface LaunchResult {
  * enabled; otherwise the user is pointed at Add-to-Steam. macOS has no
  * Proton path, so .exe is always refused there.
  */
+/**
+ * Windows: "the game has exited" is not "the process we spawned has exited" —
+ * launcher stubs (Ubisoft Connect, EA app) return at once and start the real
+ * game themselves. So after our child ends, keep polling until no process is
+ * running from the game's install folder any more. `countRunning` is
+ * injectable for tests; the default asks PowerShell.
+ */
+export function countProcessesUnder(folder: string): Promise<number> {
+  const esc = folder.replace(/'/g, "''");
+  const ps = `(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith('${esc}', [System.StringComparison]::OrdinalIgnoreCase) } | Measure-Object).Count`;
+  return new Promise((resolve) => {
+    const r = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true });
+    let out = '';
+    r.stdout.on('data', (b: Buffer) => { out += b.toString(); });
+    r.on('error', () => resolve(0));
+    r.on('close', () => resolve(Number(out.trim()) || 0));
+  });
+}
+
+export function watchGameExit(
+  folder: string, childExited: () => boolean, onExit: () => void,
+  opts: { intervalMs?: number; firstDelayMs?: number; maxMs?: number; countRunning?: (folder: string) => Promise<number> } = {},
+): void {
+  const interval = opts.intervalMs ?? 10_000;
+  const count = opts.countRunning ?? countProcessesUnder;
+  const deadline = Date.now() + (opts.maxMs ?? 24 * 3600_000);
+  let idle = 0;
+  const tick = async () => {
+    const n = childExited() ? await count(folder) : 1;
+    idle = n === 0 ? idle + 1 : 0;
+    if (idle >= 2 || Date.now() > deadline) { onExit(); return; }
+    setTimeout(tick, interval).unref();
+  };
+  setTimeout(tick, opts.firstDelayMs ?? 8_000).unref();
+}
+
 export function launchGame(
   exePath: string,
-  opts: { faugusEnabled?: boolean; faugusPerGame?: boolean; title?: string; coverPng?: string; onExit?: (code: number | null) => void } = {}
+  opts: { faugusEnabled?: boolean; faugusPerGame?: boolean; title?: string; coverPng?: string; gameFolder?: string; onExit?: (code: number | null) => void } = {}
 ): LaunchResult {
   if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
   const isExe = exePath.toLowerCase().endsWith('.exe');
@@ -130,6 +166,14 @@ export function launchGame(
       windowsHide: false,
     });
     child.unref();
+    if (opts.onExit && process.platform === 'win32') {
+      let exited = false;
+      child.on('exit', () => { exited = true; });
+      child.on('error', () => { exited = true; });
+      const onExit = opts.onExit;
+      watchGameExit(opts.gameFolder || path.dirname(exePath), () => exited, () => onExit(null));
+      return { ok: true, exitTracked: true };
+    }
     return { ok: true };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };

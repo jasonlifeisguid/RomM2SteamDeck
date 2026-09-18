@@ -1,12 +1,20 @@
 /**
- * Back up / restore a game's Windows-side save data from a Proton prefix.
+ * Back up / restore a game's Windows-side save data.
  *
- * A prefix is ~350 MB of Proton scaffolding; the part worth moving between
- * devices is the user profile under drive_c/users/steamuser: Documents,
- * Saved Games and AppData. Backups are plain zips of those folders (paths
- * relative to the profile). Restore extracts into the profile of any prefix,
- * so a backup taken from Faugus's shared `default` prefix can be restored
- * into a game's own prefix — that is how saves migrate to per-game prefixes.
+ * On Linux the data lives in a Proton prefix: ~350 MB of scaffolding around a
+ * user profile at drive_c/users/steamuser with Documents, Saved Games and
+ * AppData. On Windows it is the real user profile — the same folder layout,
+ * except that Documents (and Saved Games) may be redirected elsewhere by
+ * Known Folders (OneDrive does this), so every folder is resolved individually.
+ * Backups are plain zips of those folders with paths relative to the profile
+ * ("Documents/My Games/…", "AppData/Local/…"), so a zip taken from a Proton
+ * prefix restores onto Windows and vice versa.
+ *
+ * SCOPE. A per-game Proton prefix holds only that game, so everything in its
+ * profile is the game's. The real Windows profile holds everything — every
+ * other game, the user's actual documents — so on Windows only the game's
+ * known save locations (its "scope", see savepaths.ts) are ever listed; with
+ * no scope, nothing is. A scope can also narrow a Linux prefix.
  *
  * SAVES VS SETTINGS. Games mix per-device settings (resolution, graphics
  * quality) into the same folders as progress, and syncing those between a
@@ -24,7 +32,7 @@
  *
  * Uses the bundled 7za. No electron imports.
  */
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -35,8 +43,14 @@ const path7za = (require('7zip-bin').path7za as string).replace('app.asar', 'app
 /** Profile folders that hold game data. Everything else in the profile is skipped. */
 export const SAVE_FOLDERS = ['Documents', 'My Documents', 'Saved Games', 'AppData/Roaming', 'AppData/Local', 'AppData/LocalLow'];
 
-/** Never a save: Windows/Wine housekeeping. Always excluded, not user-editable. */
-export const JUNK_EXCLUDES = ['AppData/Local/Temp/**', 'AppData/Local/Microsoft/**', 'AppData/Roaming/Microsoft/**', 'AppData/LocalLow/Microsoft/**'];
+/** Never a save: Windows/Wine housekeeping, driver caches, crash dumps. Always excluded, not user-editable. */
+export const JUNK_EXCLUDES = [
+  'AppData/Local/Temp/**', 'AppData/Local/Microsoft/**', 'AppData/Roaming/Microsoft/**', 'AppData/LocalLow/Microsoft/**',
+  'AppData/Local/CrashDumps/**', 'AppData/Local/D3DSCache/**', 'AppData/Local/NVIDIA/**', 'AppData/Local/AMD/**',
+  'AppData/Local/Packages/**', 'AppData/Local/ConnectedDevicesPlatform/**', 'AppData/Local/Comms/**', 'AppData/Local/PeerDistRepub/**',
+  'AppData/Local/Steam/**', 'AppData/Local/Ubisoft Game Launcher/logs/**', 'AppData/Local/Ubisoft Game Launcher/cache/**',
+  'AppData/Local/Ubisoft Game Launcher/spool/**', 'AppData/Local/EasyAntiCheat/**', 'AppData/Roaming/EasyAntiCheat/**',
+];
 
 /** Per-device settings, not progress. Default; user-editable; can be ignored per game. */
 export const DEFAULT_CONFIG_EXCLUDES = ['**/Saved/Config/**', '*.ini', '*.cfg'];
@@ -46,6 +60,9 @@ export interface SaveRules {
   configExcludes: string[];
   /** Ignore configExcludes for this game (its progress lives in "config" files). */
   includeConfig: boolean;
+  /** Profile-relative folders/files that belong to this game ("Documents/My Games/X").
+   *  Empty → the whole profile (fine for a per-game prefix; refused on the real Windows profile). */
+  scope?: string[];
 }
 
 export const DEFAULT_RULES: SaveRules = { configExcludes: DEFAULT_CONFIG_EXCLUDES, includeConfig: false };
@@ -57,9 +74,28 @@ export interface SaveListing {
   included: SaveFile[];
   excluded: ExcludedFile[];
   totalBytes: number;
+  /** The layout needs a scope and none was given: nothing was listed. */
+  unscoped?: boolean;
 }
 
-export interface SaveResult { ok: boolean; error?: string; file?: string; folders?: string[]; files?: number; bytes?: number; excludedConfig?: number; }
+export interface SaveResult { ok: boolean; error?: string; file?: string; folders?: string[]; files?: number; bytes?: number; excludedConfig?: number; entries?: string[]; }
+
+// ── Layouts ────────────────────────────────────────────────────────────────
+
+/** Where a profile's save folders actually are. */
+export interface SaveLayout {
+  /** The profile root — shown to the user and the root the zip paths are relative to. */
+  profile: string;
+  /** Real directory for each SAVE_FOLDERS entry that exists (Windows: Documents may be redirected). */
+  roots: Record<string, string>;
+  /** Every root sits at <profile>/<top> — zips and restores can work in place. */
+  direct: boolean;
+  /** The real Windows profile: never list it without a scope. */
+  requireScope: boolean;
+}
+
+/** A Proton/Wine prefix root (string) or an explicit layout. */
+export type SaveTarget = string | SaveLayout;
 
 /** The Windows user profile directory inside a prefix (Proton: steamuser; plain Wine: the Linux user), or null. */
 export function profileDir(prefixRoot: string): string | null {
@@ -70,6 +106,79 @@ export function profileDir(prefixRoot: string): string | null {
   }
   return null;
 }
+
+const isRealDir = (p: string) => { try { const st = fs.lstatSync(p); return st.isDirectory() && !st.isSymbolicLink(); } catch { return false; } };
+
+/** Layout of a Proton/Wine prefix, or null when the prefix has no profile yet.
+ *  Symlinked folders (Proton's "My Documents" → Documents) are left out so nothing is listed twice. */
+export function prefixLayout(prefixRoot: string): SaveLayout | null {
+  const profile = profileDir(prefixRoot);
+  if (!profile) return null;
+  const roots: Record<string, string> = {};
+  for (const top of SAVE_FOLDERS) {
+    const dir = path.join(profile, top);
+    if (isRealDir(dir)) roots[top] = dir;
+  }
+  return { profile, roots, direct: true, requireScope: false };
+}
+
+export interface WindowsFolders { profile: string; documents: string; savedGames: string; appData: string; localAppData: string; }
+
+/** Read the Known Folder locations from the registry (Documents / Saved Games can be
+ *  redirected, typically into OneDrive). Falls back to the classic layout. */
+export function windowsKnownFolders(env: Record<string, string | undefined> = process.env, regQuery?: () => string): WindowsFolders {
+  const profile = env.USERPROFILE || os.homedir();
+  const out: WindowsFolders = {
+    profile,
+    documents: path.join(profile, 'Documents'),
+    savedGames: path.join(profile, 'Saved Games'),
+    appData: env.APPDATA || path.join(profile, 'AppData', 'Roaming'),
+    localAppData: env.LOCALAPPDATA || path.join(profile, 'AppData', 'Local'),
+  };
+  let text = '';
+  try {
+    text = regQuery ? regQuery() : spawnSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders'], { encoding: 'utf8', windowsHide: true }).stdout || '';
+  } catch { return out; }
+  const expand = (v: string) => v.replace(/%([^%]+)%/g, (m, name) => env[name] ?? env[name.toUpperCase()] ?? m);
+  for (const line of text.split(/\r?\n/)) {
+    const m = line.match(/^\s+(.+?)\s+REG_(?:EXPAND_)?SZ\s+(.+?)\s*$/);
+    if (!m) continue;
+    const key = m[1].toLowerCase(); const val = expand(m[2]);
+    if (key === 'personal') out.documents = val;
+    else if (key === '{4c5c32ff-bb9d-43b0-b5b4-2d72e54eaaa4}') out.savedGames = val;
+    else if (key === 'appdata') out.appData = val;
+    else if (key === 'local appdata') out.localAppData = val;
+  }
+  return out;
+}
+
+/** Layout of the real Windows profile. Always requires a scope. */
+export function windowsLayout(folders: WindowsFolders = windowsKnownFolders()): SaveLayout {
+  const candidates: Record<string, string> = {
+    'Documents': folders.documents,
+    'Saved Games': folders.savedGames,
+    'AppData/Roaming': folders.appData,
+    'AppData/Local': folders.localAppData,
+    'AppData/LocalLow': path.join(folders.profile, 'AppData', 'LocalLow'),
+  };
+  // Roots are kept even when the folder doesn't exist yet (a restore creates it);
+  // only a symlinked folder is left out, as in a prefix.
+  const isSymlink = (p: string) => { try { return fs.lstatSync(p).isSymbolicLink(); } catch { return false; } };
+  const roots: Record<string, string> = {};
+  let direct = true;
+  for (const [top, dir] of Object.entries(candidates)) {
+    if (isSymlink(dir)) continue;
+    roots[top] = dir;
+    if (path.resolve(dir).toLowerCase() !== path.resolve(folders.profile, top).toLowerCase()) direct = false;
+  }
+  return { profile: folders.profile, roots, direct, requireScope: true };
+}
+
+export function resolveLayout(target: SaveTarget): SaveLayout | null {
+  return typeof target === 'string' ? prefixLayout(target) : target;
+}
+
+// ── Listing ────────────────────────────────────────────────────────────────
 
 /**
  * Glob → RegExp over a forward-slash relative path, case-insensitive (Windows
@@ -97,11 +206,28 @@ function firstMatch(rel: string, patterns: string[]): string | null {
   return null;
 }
 
-/** Walk the profile's save folders and classify every file. Symlinked folders
- *  (Proton's "My Documents" → Documents alias) are skipped so nothing is listed twice. */
-export function listSaveFiles(prefixRoot: string, rules: SaveRules = DEFAULT_RULES): SaveListing | null {
-  const profile = profileDir(prefixRoot);
-  if (!profile) return null;
+/** Scope entries as clean forward-slash relative paths, de-duplicated. Bare top-level
+ *  folders ("Documents") are dropped — a scope must name something inside them. */
+export function normalizeScope(scope: string[] | undefined | null): string[] {
+  const out: string[] = [];
+  const tops = new Set(SAVE_FOLDERS.map((t) => t.toLowerCase()));
+  for (const raw of scope || []) {
+    const s = String(raw).trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').replace(/\/{2,}/g, '/');
+    if (!s || s.includes('..') || tops.has(s.toLowerCase()) || s.toLowerCase() === 'appdata') continue;
+    if (!out.some((x) => x.toLowerCase() === s.toLowerCase())) out.push(s);
+  }
+  return out;
+}
+
+/** Walk the layout's save folders (pruned to the scope) and classify every file. */
+export function listSaveFiles(target: SaveTarget, rules: SaveRules = DEFAULT_RULES): SaveListing | null {
+  const layout = resolveLayout(target);
+  if (!layout) return null;
+  const scope = normalizeScope(rules.scope).map((s) => s.toLowerCase());
+  if (layout.requireScope && !scope.length) return { profile: layout.profile, included: [], excluded: [], totalBytes: 0, unscoped: true };
+  const inScope = (rel: string) => !scope.length || scope.some((s) => rel === s || rel.startsWith(s + '/'));
+  const mayContain = (relDir: string) => inScope(relDir) || scope.some((s) => s.startsWith(relDir + '/'));
+
   const included: SaveFile[] = [];
   const excluded: ExcludedFile[] = [];
   const configPatterns = rules.includeConfig ? [] : rules.configExcludes;
@@ -110,9 +236,10 @@ export function listSaveFiles(prefixRoot: string, rules: SaveRules = DEFAULT_RUL
     try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
     for (const e of entries) {
       const rel = relDir ? `${relDir}/${e.name}` : e.name;
+      const relL = rel.toLowerCase();
       if (e.isSymbolicLink()) continue;
-      if (e.isDirectory()) { walk(path.join(dir, e.name), rel); continue; }
-      if (!e.isFile()) continue;
+      if (e.isDirectory()) { if (mayContain(relL)) walk(path.join(dir, e.name), rel); continue; }
+      if (!e.isFile() || !inScope(relL)) continue;
       let st: fs.Stats;
       try { st = fs.statSync(path.join(dir, e.name)); } catch { continue; }
       const junk = firstMatch(rel, JUNK_EXCLUDES);
@@ -122,17 +249,12 @@ export function listSaveFiles(prefixRoot: string, rules: SaveRules = DEFAULT_RUL
       included.push({ rel, size: st.size, mtimeMs: st.mtimeMs });
     }
   };
-  for (const top of SAVE_FOLDERS) {
-    const dir = path.join(profile, top);
-    try {
-      const st = fs.lstatSync(dir);
-      if (!st.isDirectory() || st.isSymbolicLink()) continue;
-    } catch { continue; }
-    walk(dir, top);
+  for (const [top, dir] of Object.entries(layout.roots)) {
+    if (mayContain(top.toLowerCase())) walk(dir, top);
   }
   included.sort((a, b) => a.rel.localeCompare(b.rel));
   excluded.sort((a, b) => a.rel.localeCompare(b.rel));
-  return { profile, included, excluded, totalBytes: included.reduce((n, f) => n + f.size, 0) };
+  return { profile: layout.profile, included, excluded, totalBytes: included.reduce((n, f) => n + f.size, 0) };
 }
 
 /** Cheap change detector: MD5 over (path, size, mtime) of the included files.
@@ -142,6 +264,35 @@ export function fingerprint(listing: SaveListing): string {
   for (const f of listing.included) h.update(`${f.rel}|${f.size}|${Math.round(f.mtimeMs)}\n`);
   return h.digest('hex');
 }
+
+/**
+ * Guess a game's save locations from the files of one of its backups: the
+ * first folder under each save root, one level deeper inside generic
+ * containers ("Documents/My Games/<game>", "AppData/LocalLow/<company>/<game>",
+ * "AppData/Roaming/Goldberg SteamEmu Saves/<appid>"). Used to learn a Windows
+ * scope from a save that was made in a per-game Proton prefix.
+ */
+export function learnScope(entries: string[]): string[] {
+  const containers = new Set(['my games', 'goldberg steamemu saves', 'gse saves']);
+  const out: string[] = [];
+  for (const raw of entries) {
+    const rel = raw.replace(/\\/g, '/').replace(/^\/+/, '');
+    if (firstMatch(rel, JUNK_EXCLUDES)) continue;
+    const parts = rel.split('/');
+    const top = SAVE_FOLDERS.find((t) => rel.toLowerCase().startsWith(t.toLowerCase() + '/'));
+    if (!top) continue;
+    const topDepth = top.split('/').length;
+    let depth = topDepth + 1;                                      // <top>/<X>
+    const first = parts[topDepth]?.toLowerCase();
+    if (first && (containers.has(first) || top === 'AppData/LocalLow')) depth = topDepth + 2;
+    if (parts.length <= depth) continue;                           // a loose file directly in the root: skip
+    const s = parts.slice(0, depth).join('/');
+    if (!out.some((x) => x.toLowerCase() === s.toLowerCase())) out.push(s);
+  }
+  return normalizeScope(out);
+}
+
+// ── Zip / unzip ────────────────────────────────────────────────────────────
 
 function run7za(args: string[], cwd?: string): Promise<{ code: number; stderr: string; stdout: string }> {
   return new Promise((resolve, reject) => {
@@ -162,25 +313,45 @@ export function backupFileName(gameName: string, when = new Date()): string {
   return `${stem} saves ${d}.zip`;
 }
 
+/** Copy the listed files into a temp dir laid out like a profile, so one zip
+ *  command sees them at their canonical relative paths (redirected folders). */
+function stageFiles(layout: SaveLayout, listing: SaveListing): string {
+  const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-stage-'));
+  for (const f of listing.included) {
+    const top = Object.keys(layout.roots).find((t) => f.rel.toLowerCase().startsWith(t.toLowerCase() + '/'))!;
+    const src = path.join(layout.roots[top], f.rel.slice(top.length + 1));
+    const dst = path.join(stage, f.rel);
+    fs.mkdirSync(path.dirname(dst), { recursive: true });
+    fs.copyFileSync(src, dst);
+    try { const st = fs.statSync(src); fs.utimesSync(dst, st.atime, st.mtime); } catch { /* keep copy time */ }
+  }
+  return stage;
+}
+
 /**
  * Zip the listing's included files (paths relative to the profile, so the zip
- * holds "Documents/…", "AppData/Roaming/…" — portable across prefixes and
- * users) to `file`. The file list is handed to 7za via a list file, so the
+ * holds "Documents/…", "AppData/Roaming/…" — portable across prefixes, users
+ * and OSes) to `file`. The file list is handed to 7za via a list file, so the
  * exclusion rules are applied exactly as previewed.
  */
-export async function zipSaves(prefixRoot: string, file: string, rules: SaveRules = DEFAULT_RULES): Promise<SaveResult & { listing?: SaveListing }> {
-  const listing = listSaveFiles(prefixRoot, rules);
-  if (!listing) return { ok: false, error: 'No Windows user profile in this prefix yet (run the game once first)' };
-  if (!listing.included.length) return { ok: false, error: 'Nothing to back up — no save files in this prefix' };
+export async function zipSaves(target: SaveTarget, file: string, rules: SaveRules = DEFAULT_RULES): Promise<SaveResult & { listing?: SaveListing }> {
+  const layout = resolveLayout(target);
+  if (!layout) return { ok: false, error: 'No Windows user profile in this prefix yet (run the game once first)' };
+  const listing = listSaveFiles(layout, rules)!;
+  if (listing.unscoped) return { ok: false, error: 'No save locations known for this game yet — set them in "What syncs…"' };
+  if (!listing.included.length) return { ok: false, error: 'Nothing to back up — no save files found' };
   fs.mkdirSync(path.dirname(file), { recursive: true });
   try { fs.unlinkSync(file); } catch { /* fresh */ }
+  const stage = layout.direct ? null : stageFiles(layout, listing);
+  const cwd = stage ?? layout.profile;
   const listFile = `${file}.files.txt`;
   fs.writeFileSync(listFile, listing.included.map((f) => f.rel).join('\n') + '\n', 'utf8');
   try {
-    const r = await run7za(['a', '-tzip', '-mx=5', '-y', '-spf2', file, `@${listFile}`], listing.profile);
+    const r = await run7za(['a', '-tzip', '-mx=5', '-y', '-spf2', file, `@${listFile}`], cwd);
     if (r.code !== 0) return { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
   } finally {
     try { fs.unlinkSync(listFile); } catch { /* best effort */ }
+    if (stage) fs.rmSync(stage, { recursive: true, force: true });
   }
   const folders = [...new Set(listing.included.map((f) => f.rel.split('/')[0]))];
   return {
@@ -190,45 +361,75 @@ export async function zipSaves(prefixRoot: string, file: string, rules: SaveRule
 }
 
 /** Zip the profile's save folders into <destDir>/<game> saves <date>.zip. */
-export async function backupSaves(prefixRoot: string, destDir: string, gameName: string, rules: SaveRules = DEFAULT_RULES): Promise<SaveResult> {
-  return zipSaves(prefixRoot, path.join(destDir, backupFileName(gameName)), rules);
+export async function backupSaves(target: SaveTarget, destDir: string, gameName: string, rules: SaveRules = DEFAULT_RULES): Promise<SaveResult> {
+  return zipSaves(target, path.join(destDir, backupFileName(gameName)), rules);
 }
 
-/** Top-level entries in a zip (via 7za listing), or null if unreadable. */
-async function zipTopLevels(file: string): Promise<Set<string> | null> {
+/** File entries in a zip (forward-slash paths), or null if unreadable. */
+export async function listZipEntries(file: string): Promise<string[] | null> {
   const r = await run7za(['l', '-slt', '-ba', file]);
   if (r.code !== 0) return null;
-  const tops = new Set<string>();
+  const out: string[] = [];
+  let cur: string | null = null;
   for (const line of r.stdout.split(/\r?\n/)) {
     const m = line.match(/^Path = (.+)$/);
-    if (m) tops.add(m[1].replace(/\\/g, '/').split('/')[0]);
+    if (m) { cur = m[1].replace(/\\/g, '/'); continue; }
+    const f = line.match(/^Folder = (.)/);
+    if (f && cur !== null) { if (f[1] === '-') out.push(cur); cur = null; }
   }
-  return tops;
+  return out;
 }
 
 /**
- * Extract a backup into the prefix's profile, overwriting files with the same
- * names and leaving everything else alone. Refuses zips whose top-level
- * entries aren't the known save folders (so a random zip can't spray files
- * into the prefix). With `createProfile`, a missing profile is created first —
- * used to seed a brand-new prefix from a cloud save before the game's first run.
+ * Extract a backup into the profile, overwriting files with the same names
+ * and leaving everything else alone. Refuses zips whose top-level entries
+ * aren't the known save folders (so a random zip can't spray files into the
+ * profile). With `createProfile`, a missing prefix profile is created first —
+ * used to seed a brand-new prefix from a cloud save before the game's first
+ * run. Returns the zip's file entries so the caller can learn a scope.
  */
-export async function restoreSaves(prefixRoot: string, zipFile: string, opts: { createProfile?: boolean } = {}): Promise<SaveResult> {
+export async function restoreSaves(target: SaveTarget, zipFile: string, opts: { createProfile?: boolean } = {}): Promise<SaveResult> {
   if (!fs.existsSync(zipFile)) return { ok: false, error: 'Backup file not found' };
-  let profile = profileDir(prefixRoot);
-  if (!profile && opts.createProfile) {
-    profile = path.join(prefixRoot, 'drive_c', 'users', 'steamuser');
-    fs.mkdirSync(profile, { recursive: true });
+  let layout = resolveLayout(target);
+  if (!layout && opts.createProfile && typeof target === 'string') {
+    fs.mkdirSync(path.join(target, 'drive_c', 'users', 'steamuser'), { recursive: true });
+    layout = prefixLayout(target);
   }
-  if (!profile) return { ok: false, error: 'No Windows user profile in this prefix yet (run the game once first, then restore)' };
-  const tops = await zipTopLevels(zipFile);
-  if (!tops || !tops.size) return { ok: false, error: 'Not a readable zip' };
+  if (!layout) return { ok: false, error: 'No Windows user profile in this prefix yet (run the game once first, then restore)' };
+  const entries = await listZipEntries(zipFile);
+  if (!entries || !entries.length) return { ok: false, error: 'Not a readable zip' };
+  const tops = new Set(entries.map((e) => e.split('/')[0]));
   const allowed = new Set(SAVE_FOLDERS.map((f) => f.split('/')[0]));
   const bad = [...tops].filter((t) => !allowed.has(t) || t.includes('..'));
-  if (bad.length) return { ok: false, error: `Not a save backup — unexpected top-level entries: ${bad.slice(0, 3).join(', ')}` };
-  const r = await run7za(['x', '-y', '-aoa', `-o${profile}`, zipFile]);
-  if (r.code !== 0) return { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
-  return { ok: true, folders: [...tops] };
+  if (bad.length || entries.some((e) => e.split('/').includes('..'))) {
+    return { ok: false, error: `Not a save backup — unexpected top-level entries: ${bad.slice(0, 3).join(', ') || '..'}` };
+  }
+  if (layout.direct) {
+    const r = await run7za(['x', '-y', '-aoa', `-o${layout.profile}`, zipFile]);
+    if (r.code !== 0) return { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
+  } else {
+    // Redirected folders: extract to a temp dir, then copy each save root to where it really lives.
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-restore-'));
+    try {
+      const r = await run7za(['x', '-y', '-aoa', `-o${tmp}`, zipFile]);
+      if (r.code !== 0) return { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
+      // Longest tops first so "AppData/Roaming" is moved before "AppData" could be
+      for (const top of Object.keys(layout.roots).sort((a, b) => b.length - a.length)) {
+        const src = path.join(tmp, top);
+        if (!fs.existsSync(src)) continue;
+        fs.cpSync(src, layout.roots[top], { recursive: true, force: true, preserveTimestamps: true });
+        fs.rmSync(src, { recursive: true, force: true });
+      }
+      // Anything left is a save root that doesn't exist here yet (e.g. no LocalLow): create it in place.
+      for (const top of tops) {
+        const src = path.join(tmp, top);
+        if (fs.existsSync(src)) fs.cpSync(src, path.join(layout.profile, top), { recursive: true, force: true, preserveTimestamps: true });
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  }
+  return { ok: true, folders: [...tops], entries };
 }
 
 /** MD5 of a file — RomM's `content_hash` for uploaded saves is MD5, so this is directly comparable. */

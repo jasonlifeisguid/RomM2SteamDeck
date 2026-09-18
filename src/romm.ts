@@ -220,6 +220,17 @@ export class RommClient {
     return d?.device_id || null;
   }
 
+  /** The user's registered devices (id → name), for labelling where a save came from. Empty on old servers. */
+  async listDevices(): Promise<{ id: string; name: string }[]> {
+    try {
+      const data = await this.get('/devices');
+      const list = Array.isArray(data) ? data : [];
+      return (list as { id?: unknown; name?: unknown; hostname?: unknown }[])
+        .filter((d) => !!d && typeof d.id === 'string')
+        .map((d) => ({ id: d.id as string, name: String(d.name || d.hostname || d.id) }));
+    } catch { return []; }
+  }
+
   async heartbeat(): Promise<{ ok: boolean; version?: string; error?: string }> {
     try {
       const data = (await this.get('/heartbeat')) as { SYSTEM?: { VERSION?: string } };

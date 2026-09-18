@@ -49,6 +49,10 @@ export interface DownloadRecord {
   cloud?: { saveId: number; contentHash: string; fingerprint: string; syncedAt: number };
   /** Include config-like files (.ini/.cfg/Saved/Config) in this game's save backups. */
   syncConfigFiles?: boolean;
+  /** Windows: profile-relative folders this game saves to ("Documents/My Games/X"); see savepaths.ts. */
+  savePaths?: string[];
+  /** Where savePaths came from, for the UI ("PCGamingWiki: X", "learned from restore"). */
+  savePathsNote?: string;
 }
 
 export interface RomInfo {

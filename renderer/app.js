@@ -147,6 +147,22 @@ function toast(message, kind = '') {
   setTimeout(() => el.remove(), 5000);
 }
 
+/** A toast that stays until dismissed, with action buttons: [{ label, fn }]. */
+function stickyToast(message, actions, kind = '') {
+  const el = document.createElement('div');
+  el.className = `toast sticky ${kind}`;
+  const text = document.createElement('span'); text.textContent = message; el.appendChild(text);
+  const row = document.createElement('div'); row.className = 'toast-actions';
+  for (const a of actions) {
+    const b = document.createElement('button'); b.className = 'secondary'; b.textContent = a.label;
+    b.addEventListener('click', () => { el.remove(); a.fn?.(); });
+    row.appendChild(b);
+  }
+  el.appendChild(row);
+  $('toasts').appendChild(el);
+  return el;
+}
+
 function romYear(rom) {
   const ts = rom.metadatum?.first_release_date;
   return ts ? new Date(ts).getFullYear() : null;
@@ -566,7 +582,7 @@ function showContextMenu(e, rom) {
       item('▶ Play', () => playGame(rom));
       item('Add to Steam / Shortcut…', () => openExePicker(rom));
     }
-    item('Folders…', () => openFoldersModal(rom));
+    item('Saves & Folders…', () => openFoldersModal(rom));
     item('Delete from disk', () => deleteDownloadFor(rom), true);
   } else {
     item('Download', () => quickDownload(rom));
@@ -736,7 +752,16 @@ window.r2sd.onRefreshFailed(({ platformId, error }) => {
 
 window.r2sd.onCloudEvent((e) => {
   if (e.action === 'uploaded') toast(`${e.gameName}: saves uploaded to RomM`, 'success');
+  else if (e.action === 'unscoped') toast(`${e.gameName}: not synced — no save locations known. Saves & Folders… → What syncs… to set them.`, 'error');
   else if (e.action === 'error') toast(`${e.gameName}: cloud save upload failed — ${e.error}`, 'error');
+});
+
+window.r2sd.onUpdateAvailable((info) => {
+  stickyToast(`RomM2SteamDeck ${info.latest} is available (you have ${info.current})`, [
+    { label: 'Open release', fn: () => window.r2sd.openReleasePage(info.url) },
+    { label: 'Skip this version', fn: () => window.r2sd.skipUpdate(info.latest) },
+    { label: 'Later' },
+  ], 'success');
 });
 
 window.r2sd.onPlatformsUpdated(({ data, fetchedAt }) => {
@@ -1091,17 +1116,18 @@ async function setDefaultFromPicker() {
 function launchToast(rom, res) {
   if (res.error) { toast(res.error, 'error'); return; }
   const name = rom.name || rom.fs_name;
-  if (res.via !== 'faugus') { toast(`Launching ${name}…`, 'success'); return; }
-  if (res.faugusRegistered) toast(`Added ${name} to Faugus with its own prefix — launching…`, 'success');
+  if (res.via !== 'faugus') toast(`Launching ${name}…`, 'success');
+  else if (res.faugusRegistered) toast(`Added ${name} to Faugus with its own prefix — launching…`, 'success');
   else toast(`Launching ${name} via Faugus Launcher…`, 'success');
   if (res.faugusRegisterError) toast(`${res.faugusRegisterError}. Ran in the shared prefix this time.`, 'error');
   const c = res.cloud;
   if (!c || c.action === 'none') return;
   const from = c.from ? ` from ${c.from}` : '';
   if (c.action === 'restored') toast(`Restored newer saves${from} (RomM)`, 'success');
-  else if (c.action === 'seeded') toast(`New prefix seeded with your RomM saves${from}`, 'success');
+  else if (c.action === 'seeded') toast(res.via === 'faugus' ? `New prefix seeded with your RomM saves${from}` : `Restored your RomM saves${from}`, 'success');
+  else if (c.action === 'unscoped') toast('Cloud saves: no save locations known for this game yet — Saves & Folders… → What syncs… to set them', 'error');
   else if (c.action === 'uploaded') toast('Uploaded your latest saves to RomM before launching', 'success');
-  else if (c.action === 'conflict') toast('Saves differ from RomM on both sides — not synced. Use Folders… to choose.', 'error');
+  else if (c.action === 'conflict') toast('Saves differ from RomM on both sides — not synced. Use Saves & Folders… to choose.', 'error');
   else if (c.action === 'error') toast(`Cloud saves: ${c.error}`, 'error');
 }
 
@@ -1242,7 +1268,8 @@ async function openFoldersModal(rom) {
           cloudRow.append(` · latest on RomM ${when.toLocaleString()}${st.remote.fromDevice ? ` from ${st.remote.fromDevice}` : ''} (${formatSize(st.remote.size)}, ${st.remote.versions} version${st.remote.versions === 1 ? '' : 's'})`);
         }
         if (st.local) cloudRow.append(` · local ${st.local.files} files, ${formatSize(st.local.bytes)}${st.local.excludedConfig ? `, ${st.local.excludedConfig} config files excluded` : ''}`);
-        if (!st.own) cloudRow.append(' · shared prefix: manual only');
+        if (st.unscoped) cloudRow.append(' · no save locations known yet (What syncs…)');
+        else if (!st.own) cloudRow.append(' · shared prefix: manual only');
       };
       cmk('Upload to RomM', 'Zip this prefix\'s saves and store them in your RomM account (keeps the last 5 versions)', async () => {
         const res = await window.r2sd.cloudUpload(rom.id, root);
@@ -1261,7 +1288,7 @@ async function openFoldersModal(rom) {
     list.appendChild(g);
   };
   if (info.gameFolder) addGroup('Game', null, [{ label: 'Game folder (install)', path: info.gameFolder }]);
-  for (const p of info.prefixes) if (p.folders.length) addGroup(p.label, p.root, p.folders, p.source !== 'windows');
+  for (const p of info.prefixes) if (p.folders.length) addGroup(p.label, p.root, p.folders, true);
   if (!info.gameFolder && !info.prefixes.length) {
     list.innerHTML = '<p class="folders-empty">No folders found yet.</p>';
   } else if (!info.prefixes.length) {
@@ -1293,9 +1320,19 @@ async function renderSyncs() {
   const list = $('syncs-list');
   list.innerHTML = '';
   if (!p.ok) { list.textContent = p.error; return; }
-  $('syncs-summary').textContent = `${p.included.length} files, ${formatSize(p.totalBytes)} will sync · ${p.excluded.filter((e) => e.reason === 'config').length} config files excluded · ${p.excluded.filter((e) => e.reason === 'junk').length} temp/system files skipped`;
+  $('syncs-summary').textContent = p.unscoped
+    ? 'Nothing will sync until this game\'s save locations are known.'
+    : `${p.included.length} files, ${formatSize(p.totalBytes)} will sync · ${p.excluded.filter((e) => e.reason === 'config').length} config files excluded · ${p.excluded.filter((e) => e.reason === 'junk').length} temp/system files skipped`;
   $('syncs-include').checked = p.includeConfig;
   $('syncs-patterns').value = p.patterns.join('\n');
+  // Windows: the real profile holds everything, so only the game's own locations are read
+  $('syncs-paths-section').hidden = !p.scoped;
+  if (p.scoped) {
+    if (document.activeElement !== $('syncs-paths')) $('syncs-paths').value = p.savePaths.join('\n');
+    $('syncs-paths-note').textContent = p.savePaths.length
+      ? `Source: ${p.savePathsNote || 'unknown'}`
+      : 'None yet — Look up checks for a Steam-emulator app id and the PCGamingWiki save-location database; a restore from RomM or a backup also teaches them.';
+  }
   const add = (cls, text, why) => { const d = document.createElement('div'); d.className = 'f ' + cls; d.textContent = text; d.title = text; if (why) { const w = document.createElement('span'); w.className = 'why'; w.textContent = why; d.appendChild(w); } list.appendChild(d); };
   const h = (t) => { const d = document.createElement('div'); d.className = 'h'; d.textContent = t; list.appendChild(d); };
   h('Included');
@@ -1506,17 +1543,35 @@ const CLOUD_OPTIONS = [
   { value: 'auto', label: 'Auto' },
 ];
 
-/** Linux only: show the Faugus row with install status. */
+const UPDATE_OPTIONS = [
+  { value: 'auto', label: 'Auto' },
+  { value: 'off', label: 'Off' },
+];
+
+function renderUpdateSetting(cfg) {
+  setDropdownValue('cfg-updates', cfg.updateCheck || 'auto');
+  $('cfg-updates-hint').textContent = cfg.updateCheck === 'off'
+    ? 'Never asks GitHub for a newer release'
+    : (cfg.updateCheckedAt ? `Checks GitHub daily · last ${new Date(cfg.updateCheckedAt).toLocaleDateString()}` : 'Checks GitHub daily on startup');
+}
+
+/** Faugus / prefix rows are Linux only; cloud saves shows on Linux and Windows. */
 async function renderFaugusSetting(cfg) {
   const [platform, fg] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.faugusStatus()]);
   $('cfg-faugus-row').hidden = platform !== 'linux';
   $('cfg-faugusprefix-row').hidden = platform !== 'linux';
-  $('cfg-cloud-row').hidden = platform !== 'linux';
-  if (platform !== 'linux') return;
+  $('cfg-cloud-row').hidden = platform !== 'linux' && platform !== 'win32';
   setDropdownValue('cfg-cloud', cfg.cloudSaves || 'off');
+  if (platform === 'win32') {
+    $('cfg-cloud-hint').textContent = cfg.cloudSaves === 'auto'
+      ? 'Restore before Play, upload after the game exits — games with known save locations'
+      : 'Manual upload/download in Saves & Folders…';
+    return;
+  }
+  if (platform !== 'linux') return;
   $('cfg-cloud-hint').textContent = cfg.cloudSaves === 'auto'
     ? (cfg.faugusPrefix === 'shared' ? 'Needs Prefix: Per game' : 'Restore before Play, upload after — per-game prefixes only')
-    : 'Manual upload/download in Folders…';
+    : 'Manual upload/download in Saves & Folders…';
   setDropdownValue('cfg-faugus', cfg.faugus || 'auto');
   setDropdownValue('cfg-faugusprefix', cfg.faugusPrefix || 'per-game');
   $('cfg-faugusprefix-hint').textContent = cfg.faugusPrefix === 'shared'
@@ -1532,6 +1587,7 @@ async function openSettings() {
   const cfg = await window.r2sd.getConfig();
   window.r2sd.getUiScaleInfo().then(renderUiScale);
   renderFaugusSetting(cfg);
+  renderUpdateSetting(cfg);
   window.r2sd.getVersion().then((v) => { $('cfg-version').textContent = v ? `v${v}` : ''; });
   $('cfg-url').value = cfg.baseUrl;
   $('cfg-username').value = cfg.username;
@@ -1714,6 +1770,23 @@ initDropdown('cfg-faugusprefix', async (value) => { renderFaugusSetting(await wi
 setDropdownOptions('cfg-faugusprefix', FAUGUS_PREFIX_OPTIONS, 'per-game');
 initDropdown('cfg-cloud', async (value) => { renderFaugusSetting(await window.r2sd.setConfig({ cloudSaves: value })); });
 setDropdownOptions('cfg-cloud', CLOUD_OPTIONS, 'off');
+initDropdown('cfg-updates', async (value) => { renderUpdateSetting(await window.r2sd.setConfig({ updateCheck: value })); });
+setDropdownOptions('cfg-updates', UPDATE_OPTIONS, 'auto');
+$('btn-check-updates').addEventListener('click', async () => {
+  const btn = $('btn-check-updates');
+  btn.disabled = true;
+  try {
+    const res = await window.r2sd.checkForUpdate();
+    if (!res.ok) toast(`Update check failed: ${res.error}`, 'error');
+    else if (res.newer) {
+      stickyToast(`RomM2SteamDeck ${res.latest} is available (you have ${res.current})`, [
+        { label: 'Open release', fn: () => window.r2sd.openReleasePage(res.url) },
+        { label: 'Later' },
+      ], 'success');
+    } else toast(`You're on the latest release (${res.current})`, 'success');
+    renderUpdateSetting(await window.r2sd.getConfig());
+  } finally { btn.disabled = false; }
+});
 setDropdownOptions('cfg-uiscale', UI_SCALE_OPTIONS, 'auto');
 window.r2sd.onUiScaleChanged(renderUiScale); // keyboard shortcuts change it too
 $('btn-add-self-steam').addEventListener('click', async () => {
@@ -1832,6 +1905,27 @@ $('syncs-patterns-save').addEventListener('click', async () => {
 $('syncs-patterns-reset').addEventListener('click', async () => {
   await window.r2sd.setSaveExcludes(null);
   toast('Config-file patterns reset to defaults', 'success');
+  await renderSyncs();
+});
+$('syncs-paths-save').addEventListener('click', async () => {
+  if (!syncsCtx) return;
+  const paths = $('syncs-paths').value.split('\n').map((s) => s.trim()).filter(Boolean);
+  const clean = await window.r2sd.setSavePaths(syncsCtx.rom.id, paths);
+  toast(clean.length ? `Save locations saved (${clean.length})` : 'Save locations cleared', 'success');
+  $('syncs-paths').blur();
+  await renderSyncs();
+});
+$('syncs-paths-detect').addEventListener('click', async () => {
+  if (!syncsCtx) return;
+  const btn = $('syncs-paths-detect');
+  btn.disabled = true; btn.textContent = 'Looking up…';
+  try {
+    const res = await window.r2sd.detectSavePaths(syncsCtx.rom.id);
+    if (!res.ok) toast(res.error, 'error');
+    else if (!res.found.length) toast('No known save locations for this game — add them by hand, or restore a save from RomM to learn them', 'error');
+    else toast(`Found ${res.found.length} save location${res.found.length === 1 ? '' : 's'}`, 'success');
+  } finally { btn.disabled = false; btn.textContent = 'Look up'; }
+  $('syncs-paths').blur();
   await renderSyncs();
 });
 $('exe-cancel').addEventListener('click', closeExePicker);

@@ -16,6 +16,8 @@ import * as faugus from './faugus';
 import * as prefixes from './prefixes';
 import * as saves from './saves';
 import * as cloud from './cloudsaves';
+import * as savepaths from './savepaths';
+import * as updates from './updates';
 
 // Cover art and screenshots are served to the renderer over a private scheme
 // that maps only onto the covers cache directory, so the renderer's CSP no
@@ -380,7 +382,41 @@ const gameFolders = (romId: number) => {
 function saveRulesFor(romId: number): saves.SaveRules {
   const cfg = config.getPublicConfig();
   const rec = downloads.findDownload(romId);
-  return { configExcludes: cfg.saveExcludes, includeConfig: rec?.syncConfigFiles === true };
+  return {
+    configExcludes: cfg.saveExcludes,
+    includeConfig: rec?.syncConfigFiles === true,
+    // Windows: the real profile is only ever read at the game's known save locations
+    scope: process.platform === 'win32' ? saves.normalizeScope(rec?.savePaths) : undefined,
+  };
+}
+
+/** A save target for one of the prefixes gameFolders() resolved for this rom: the prefix
+ *  root on Linux, the real profile's layout (Known Folders resolved) on Windows. */
+function targetFor(romId: number, root: string): saves.SaveTarget | null {
+  const info = gameFolders(romId);
+  const p = info.prefixes.find((x) => x.root === root);
+  if (!p) return null;
+  return p.source === 'windows' ? saves.windowsLayout() : p.root;
+}
+const rootOf = (t: saves.SaveTarget) => (typeof t === 'string' ? t : t.profile);
+
+/** Merge newly found save locations into the game's record. Returns the full list. */
+function addSavePaths(romId: number, paths: string[], note: string): string[] {
+  const rec = downloads.findDownload(romId);
+  const merged = saves.normalizeScope([...(rec?.savePaths || []), ...paths]);
+  const notes = [...new Set([...(rec?.savePathsNote ? rec.savePathsNote.split(' · ') : []), ...(merged.length > (rec?.savePaths || []).length ? [note] : [])])];
+  downloads.updateRecord(romId, { savePaths: merged, savePathsNote: notes.join(' · ') });
+  return merged;
+}
+
+/** Windows: look up where this game saves (Steam-emulator appid, PCGamingWiki manifest) and remember it. */
+async function detectSavePaths(romId: number): Promise<{ paths: string[]; note: string; found: string[] }> {
+  const rec = downloads.findDownload(romId);
+  const info = gameFolders(romId);
+  const index = await savepaths.getIndex(path.join(app.getPath('userData'), 'save-locations.json'));
+  const det = savepaths.detectPaths(index, { name: rec?.romName, fsName: rec?.fileName, folder: info.gameFolder, exe: info.exe });
+  const paths = det.paths.length ? addSavePaths(romId, det.paths, det.notes.join(', ')) : saves.normalizeScope(rec?.savePaths);
+  return { paths, note: downloads.findDownload(romId)?.savePathsNote || '', found: det.paths };
 }
 
 /** Register this machine with RomM once (servers without the devices API → ''). */
@@ -410,16 +446,20 @@ function rommDeviceId(): Promise<string> {
 async function cloudDeps(romId: number): Promise<cloud.CloudDeps> {
   return {
     client: getClient(),
-    rules: saveRulesFor(romId),
+    rules: () => saveRulesFor(romId),
     deviceId: (await rommDeviceId()) || null,
     getRecord: () => downloads.findDownload(romId)?.cloud ?? null,
     setRecord: (rec) => { downloads.updateRecord(romId, { cloud: rec }); },
+    // A restored save shows where the game writes — on Windows that becomes the scope
+    onRestored: process.platform === 'win32' ? (entries) => { addSavePaths(romId, saves.learnScope(entries), 'learned from a restore'); } : undefined,
   };
 }
 
-/** The prefix that auto-sync is allowed to touch: the game's own (never the shared default). */
-function ownPrefixFor(romId: number): string | null {
+/** The target auto-sync is allowed to touch: the game's own prefix (never Faugus's shared
+ *  default), or on Windows the real profile (scoped to the game's save locations). */
+function ownTargetFor(romId: number): saves.SaveTarget | null {
   const info = gameFolders(romId);
+  if (process.platform === 'win32') return info.prefixes.some((p) => p.source === 'windows') ? saves.windowsLayout() : null;
   return info.prefixes.find((p) => p.source === 'faugus-game' || p.source === 'steam')?.root ?? null;
 }
 
@@ -510,6 +550,21 @@ function registerIpc(): void {
   // built-in zoom accelerators). Steps through the explicit sizes.
   ipcMain.handle('ui:stepScale', (_e, direction: number) => setUiScale(stepScale(currentZoom(), direction > 0 ? 1 : -1)));
 
+  // Newer release on GitHub? Manual check from Settings; the startup check lives in app.whenReady.
+  ipcMain.handle('update:check', async () => {
+    try {
+      const info = await updates.checkForUpdate(app.getVersion());
+      config.setConfig({ updateCheckedAt: info.checkedAt });
+      return { ok: true, ...info };
+    } catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+  });
+  ipcMain.handle('update:skip', (_e, version: string) => { config.setConfig({ updateSkip: String(version || '') }); });
+  ipcMain.handle('update:open', (_e, url?: string) => {
+    // Only ever the project's own release pages
+    const target = typeof url === 'string' && url.startsWith('https://github.com/jasonlifeisguid/RomM2SteamDeck/') ? url : updates.RELEASES_PAGE;
+    return shell.openExternal(target);
+  });
+
   // Host OS (renderer gates the Steam Deck tip on this)
   ipcMain.handle('app:platform', () => process.platform);
   ipcMain.handle('app:version', () => app.getVersion());
@@ -563,28 +618,35 @@ function registerIpc(): void {
     // prefix doesn't exist yet we still know where Faugus will create it —
     // the registration path — so a cloud save can seed it before first run.
     let cloudAction: cloud.AutoAction | undefined;
-    let cloudPrefix: string | null = null;
+    let cloudTarget: saves.SaveTarget | null = null;
     const gameName = rec?.romName || path.basename(target);
-    const autoCloud = process.platform === 'linux' && cfg.cloudSaves === 'auto' && cfg.faugus !== 'off' && cfg.faugusPrefix !== 'shared' && config.isConfigured();
+    const autoCloud = cfg.cloudSaves === 'auto' && config.isConfigured() && (
+      process.platform === 'win32' || (process.platform === 'linux' && cfg.faugus !== 'off' && cfg.faugusPrefix !== 'shared'));
     if (autoCloud) {
-      cloudPrefix = ownPrefixFor(romId);
-      if (!cloudPrefix) {
+      cloudTarget = ownTargetFor(romId);
+      if (!cloudTarget && process.platform === 'linux') {
         const fx = faugus.readFaugusConfig();
-        cloudPrefix = path.join(fx.prefixesDir, faugus.formatTitle(gameName) || 'game');
+        cloudTarget = path.join(fx.prefixesDir, faugus.formatTitle(gameName) || 'game');
       }
-      cloudAction = await cloud.beforeLaunch(await cloudDeps(romId), romId, cloudPrefix, gameName);
+      // Windows: with no known save locations yet, look them up first (a restore from
+      // RomM would teach them too, but an upload needs them from the start).
+      if (process.platform === 'win32' && !saves.normalizeScope(rec?.savePaths).length) {
+        try { await detectSavePaths(romId); } catch (err) { console.error('save path lookup failed:', err); }
+      }
+      if (cloudTarget) cloudAction = await cloud.beforeLaunch(await cloudDeps(romId), romId, cloudTarget, gameName);
     }
     const res = shortcuts.launchGame(target, {
       faugusEnabled: cfg.faugus !== 'off',
       faugusPerGame: cfg.faugusPrefix !== 'shared',
       title: rec?.romName,
       coverPng,
+      gameFolder: gameFolders(romId).gameFolder || undefined,
       onExit: autoCloud ? async () => {
         // Re-resolve: the prefix now exists (and the registration may have
         // chosen a suffixed id if the title clashed).
-        const pfx = ownPrefixFor(romId) || cloudPrefix;
-        if (!pfx) return;
-        const action = await cloud.afterExit(await cloudDeps(romId), romId, pfx, gameName);
+        const tgt = ownTargetFor(romId) || cloudTarget;
+        if (!tgt) return;
+        const action = await cloud.afterExit(await cloudDeps(romId), romId, tgt, gameName);
         send('cloud:event', { romId, gameName, ...action });
       } : undefined,
     });
@@ -602,68 +664,82 @@ function registerIpc(): void {
     return err ? { ok: false, error: err } : { ok: true };
   });
 
-  // ── Save backup / restore (Linux prefixes only) ──────────────────────────
-  // The prefix root must be one gameFolders() resolved for this rom.
-  const prefixRootFor = (romId: number, root: string): string | null => {
-    const info = gameFolders(romId);
-    const p = info.prefixes.find((x) => x.root === root && x.source !== 'windows');
-    return p ? p.root : null;
-  };
+  // ── Save backup / restore ────────────────────────────────────────────────
+  // The root must be one gameFolders() resolved for this rom (a Proton prefix,
+  // or the Windows profile — which is only ever read at the game's save locations).
   ipcMain.handle('saves:backup', async (_e, romId: number, prefixRoot: string) => {
-    const root = prefixRootFor(romId, prefixRoot);
-    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const tgt = targetFor(romId, prefixRoot);
+    if (!tgt) return { ok: false, error: 'Not a prefix of this game' };
     const rec = downloads.findDownload(romId);
     const picked = await dialog.showOpenDialog(mainWindow!, { title: 'Folder to save the backup in', properties: ['openDirectory', 'createDirectory'] });
     if (picked.canceled || !picked.filePaths[0]) return { ok: false, cancelled: true };
-    return saves.backupSaves(root, picked.filePaths[0], rec?.romName || 'game', saveRulesFor(romId));
+    return saves.backupSaves(tgt, picked.filePaths[0], rec?.romName || 'game', saveRulesFor(romId));
   });
   ipcMain.handle('saves:restore', async (_e, romId: number, prefixRoot: string) => {
-    const root = prefixRootFor(romId, prefixRoot);
-    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const tgt = targetFor(romId, prefixRoot);
+    if (!tgt) return { ok: false, error: 'Not a prefix of this game' };
     const picked = await dialog.showOpenDialog(mainWindow!, { title: 'Choose a saves backup (.zip)', properties: ['openFile'], filters: [{ name: 'Save backups', extensions: ['zip'] }] });
     if (picked.canceled || !picked.filePaths[0]) return { ok: false, cancelled: true };
     const confirm = await dialog.showMessageBox(mainWindow!, {
       type: 'warning', buttons: ['Restore', 'Cancel'], defaultId: 1, cancelId: 1,
-      message: 'Restore saves into this prefix?',
-      detail: `Files from the backup will overwrite same-named files in\n${root}\n\nOther files are left alone.`,
+      message: process.platform === 'win32' ? 'Restore saves into your Windows user folders?' : 'Restore saves into this prefix?',
+      detail: `Files from the backup will overwrite same-named files in\n${rootOf(tgt)}\n\nOther files are left alone.`,
     });
     if (confirm.response !== 0) return { ok: false, cancelled: true };
-    return saves.restoreSaves(root, picked.filePaths[0]);
+    const r = await saves.restoreSaves(tgt, picked.filePaths[0]);
+    if (r.ok && r.entries && process.platform === 'win32') addSavePaths(romId, saves.learnScope(r.entries), 'learned from a restore');
+    return r;
   });
 
   // ── Cloud saves IPC ──────────────────────────────────────────────────────
   ipcMain.handle('cloud:status', async (_e, romId: number, prefixRoot: string) => {
-    const root = prefixRootFor(romId, prefixRoot);
-    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const tgt = targetFor(romId, prefixRoot);
+    if (!tgt) return { ok: false, error: 'Not a prefix of this game' };
     if (!config.isConfigured()) return { ok: false, error: 'Not connected to RomM' };
-    try { return { ok: true, ...(await cloud.status(await cloudDeps(romId), romId, root)), own: root === ownPrefixFor(romId) }; }
+    const own = ownTargetFor(romId);
+    try { return { ok: true, ...(await cloud.status(await cloudDeps(romId), romId, tgt)), own: own !== null && rootOf(own) === rootOf(tgt) }; }
     catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
   });
   ipcMain.handle('cloud:upload', async (_e, romId: number, prefixRoot: string) => {
-    const root = prefixRootFor(romId, prefixRoot);
-    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const tgt = targetFor(romId, prefixRoot);
+    if (!tgt) return { ok: false, error: 'Not a prefix of this game' };
     const rec = downloads.findDownload(romId);
-    return cloud.upload(await cloudDeps(romId), romId, root, rec?.romName || 'game');
+    return cloud.upload(await cloudDeps(romId), romId, tgt, rec?.romName || 'game');
   });
   ipcMain.handle('cloud:download', async (_e, romId: number, prefixRoot: string) => {
-    const root = prefixRootFor(romId, prefixRoot);
-    if (!root) return { ok: false, error: 'Not a prefix of this game' };
+    const tgt = targetFor(romId, prefixRoot);
+    if (!tgt) return { ok: false, error: 'Not a prefix of this game' };
     const confirm = await dialog.showMessageBox(mainWindow!, {
       type: 'warning', buttons: ['Download & restore', 'Cancel'], defaultId: 1, cancelId: 1,
-      message: 'Restore the latest RomM save into this prefix?',
-      detail: `Files from the cloud save will overwrite same-named files in\n${root}\n\nOther files are left alone.`,
+      message: process.platform === 'win32' ? 'Restore the latest RomM save into your Windows user folders?' : 'Restore the latest RomM save into this prefix?',
+      detail: `Files from the cloud save will overwrite same-named files in\n${rootOf(tgt)}\n\nOther files are left alone.`,
     });
     if (confirm.response !== 0) return { ok: false, cancelled: true };
-    return cloud.download(await cloudDeps(romId), romId, root);
+    return cloud.download(await cloudDeps(romId), romId, tgt);
   });
   // What would be backed up / synced from this prefix, and what's excluded and why
   ipcMain.handle('saves:preview', (_e, romId: number, prefixRoot: string) => {
-    const root = prefixRootFor(romId, prefixRoot);
-    if (!root) return { ok: false, error: 'Not a prefix of this game' };
-    const listing = saves.listSaveFiles(root, saveRulesFor(romId));
+    const tgt = targetFor(romId, prefixRoot);
+    if (!tgt) return { ok: false, error: 'Not a prefix of this game' };
+    const listing = saves.listSaveFiles(tgt, saveRulesFor(romId));
     if (!listing) return { ok: false, error: 'No Windows user profile in this prefix yet' };
     const rec = downloads.findDownload(romId);
-    return { ok: true, included: listing.included, excluded: listing.excluded, totalBytes: listing.totalBytes, includeConfig: rec?.syncConfigFiles === true, patterns: config.getPublicConfig().saveExcludes };
+    return {
+      ok: true, included: listing.included, excluded: listing.excluded, totalBytes: listing.totalBytes, unscoped: listing.unscoped === true,
+      includeConfig: rec?.syncConfigFiles === true, patterns: config.getPublicConfig().saveExcludes,
+      // Windows: the game's save locations (scope) and where they came from
+      scoped: process.platform === 'win32', savePaths: saves.normalizeScope(rec?.savePaths), savePathsNote: rec?.savePathsNote || '',
+    };
+  });
+  // Windows save locations: edit by hand, or look them up (Steam-emulator appid + PCGamingWiki manifest)
+  ipcMain.handle('saves:setPaths', (_e, romId: number, paths: string[]) => {
+    const clean = saves.normalizeScope(Array.isArray(paths) ? paths : []);
+    downloads.updateRecord(romId, { savePaths: clean, savePathsNote: clean.length ? 'set by hand' : '' });
+    return clean;
+  });
+  ipcMain.handle('saves:detectPaths', async (_e, romId: number) => {
+    try { return { ok: true, ...(await detectSavePaths(romId)) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
   });
   ipcMain.handle('saves:setIncludeConfig', (_e, romId: number, include: boolean) => downloads.updateRecord(romId, { syncConfigFiles: Boolean(include) }));
   ipcMain.handle('saves:setExcludes', (_e, patterns: string[] | null) => {
@@ -759,6 +835,19 @@ function registerAssetProtocol(): void {
     if (!fs.existsSync(file)) return new Response('', { status: 404 });
     return net.fetch(pathToFileURL(file).toString());
   });
+}
+
+/** Once a day at most, a few seconds after startup: tell the renderer when a newer release exists. */
+function scheduleUpdateCheck(): void {
+  const cfg = config.getPublicConfig();
+  if (cfg.updateCheck === 'off' || Date.now() - cfg.updateCheckedAt < 24 * 3600_000) return;
+  setTimeout(async () => {
+    try {
+      const info = await updates.checkForUpdate(app.getVersion());
+      config.setConfig({ updateCheckedAt: info.checkedAt });
+      if (info.newer && info.latest !== config.getPublicConfig().updateSkip) send('update:available', info);
+    } catch (err) { console.error('update check failed:', err); }
+  }, 6000).unref();
 }
 
 function createWindow(): void {
@@ -875,6 +964,7 @@ if (!app.requestSingleInstanceLock()) {
     }
 
     createWindow();
+    scheduleUpdateCheck();
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow();

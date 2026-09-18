@@ -428,6 +428,9 @@ input[type="search"] { width: 220px; }
 .syncs-list .f { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .syncs-list .f.x { color: var(--text-muted); }
 .syncs-list .f .why { color: var(--accent); margin-left: 6px; }
+.syncs-paths { margin: 0 0 10px; }
+.syncs-paths textarea { width: 100%; margin-top: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem; }
+.syncs-paths .modal-actions { margin-top: 4px; }
 .syncs-patterns { margin: 6px 0 10px; }
 .syncs-patterns textarea { width: 100%; margin-top: 6px; font-family: ui-monospace, Consolas, monospace; font-size: 0.8rem; }
 .folders-empty { font-size: 0.85rem; color: var(--text-muted); }
@@ -718,6 +721,10 @@ button.danger:hover { border-color: #f87171; }
   max-width: 360px;
   box-shadow: 0 4px 16px rgba(0, 0, 0, 0.5);
 }
+.toast.sticky { display: flex; flex-direction: column; gap: 8px; }
+.toast-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+.toast-actions button { font-size: 0.8rem; padding: 4px 10px; }
+.settings-row-btn { font-size: 0.8rem; padding: 4px 10px; }
 .toast.success { border-left-color: #4ade80; }
 .toast.error { border-left-color: #f87171; }
 

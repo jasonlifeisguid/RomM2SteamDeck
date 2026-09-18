@@ -112,9 +112,11 @@ Open the game's **Add to Steam / Shortcut…** dialog, pick the executable, and 
 
 ### Finding your saves and configs
 
-A Windows game under Proton keeps its Documents, Saved Games and AppData inside a Wine prefix, which is hard to locate by hand. Open a downloaded game's **Folders…** (detail view or right-click) and R2SD lists the install folder plus every prefix the game can run in — Faugus's per-game prefix, Faugus's default prefix, and Steam's `compatdata` prefix — with one-click buttons for **User profile, Documents, Saved Games, AppData\Roaming, AppData\Local, AppData\LocalLow** and **Drive C:**. Only folders that exist are shown, so a game that hasn't been run yet simply says so. On Windows the same dialog opens the real user folders.
+A Windows game under Proton keeps its Documents, Saved Games and AppData inside a Wine prefix, which is hard to locate by hand. Open a downloaded game's **Saves & Folders…** (detail view or right-click) and R2SD lists the install folder plus every prefix the game can run in — Faugus's per-game prefix, Faugus's default prefix, and Steam's `compatdata` prefix — with one-click buttons for **User profile, Documents, Saved Games, AppData\Roaming, AppData\Local, AppData\LocalLow** and **Drive C:**. Only folders that exist are shown, so a game that hasn't been run yet simply says so. On Windows the same dialog opens the real user folders.
 
-**Cloud saves through RomM.** RomM keeps saves per user and per game, versioned, and R2SD can use it as the transport between your devices. Each Linux prefix in the Folders dialog shows its RomM status (in sync, local newer, RomM newer, or both changed) with **Upload to RomM** and **Download from RomM**. Turn on **Settings → Display → Cloud saves → Auto** and R2SD does it around Play: restores a newer save from RomM before launching (or seeds a brand-new prefix from it), and uploads after the game exits if anything changed. RomM keeps the last 5 versions. If both sides changed since this device last synced, nothing is overwritten — the dialog lets you choose. Auto sync only touches a game's own prefix, never Faugus's shared `default`.
+**Cloud saves through RomM.** RomM keeps saves per user and per game, versioned, and R2SD can use it as the transport between your devices — Steam Deck, Linux desktop and Windows alike. Each prefix (or, on Windows, your user profile) in the Saves & Folders dialog shows its RomM status (in sync, local newer, RomM newer, or both changed) with **Upload to RomM** and **Download from RomM**. Turn on **Settings → Display → Cloud saves → Auto** and R2SD does it around Play: restores a newer save from RomM before launching (or seeds a brand-new prefix from it), and uploads after the game exits if anything changed. RomM keeps the last 5 versions. If both sides changed since this device last synced, nothing is overwritten — the dialog lets you choose. On Linux, auto sync only touches a game's own prefix, never Faugus's shared `default`.
+
+**Windows: where does this game save?** A per-game Proton prefix holds only that game, so everything in it is the game's. The real Windows profile holds everything — every other game and your actual documents — so on Windows R2SD only ever reads a game's known **save locations** (profile-relative folders like `AppData/Local/SB/Saved/SaveGames`), and never uploads anything without them. They come from, in order: a **restore** (a save made on the Deck shows exactly where the game writes, so Deck → desktop needs nothing else); a Steam emulator's `steam_appid.txt` next to the exe (Goldberg / GSE saves); the community **[Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest)** compiled from PCGamingWiki (~40k games; downloaded from GitHub the first time you use **Look up**, cached in the app data folder and refreshed weekly); or you, in **What syncs… → Save locations**. Windows Known Folders are honoured, so a Documents folder redirected into OneDrive works. After Play, R2SD waits until nothing is running from the game's install folder any more — so launcher stubs that hand off to the real game don't trigger an early upload — then uploads.
 
 **Saves vs. settings.** Games mix per-device settings (resolution, graphics quality) into the same folders as progress, and syncing those between a Deck and a desktop breaks both — Steam Cloud has the same problem. R2SD keeps settings out by default: Unreal's `Saved/Config/` folder and `.ini` / `.cfg` files are excluded from backups and cloud sync (registry-backed settings never leave the prefix anyway). **What syncs…** on each prefix lists exactly what will be included and what was excluded and why; there's a per-game switch to include config files for the rare game that keeps progress in them, and the patterns are editable.
 
@@ -160,7 +162,8 @@ The interface zooms to **140%** automatically on a Steam Deck — its 7" 1280×8
 - **Downloads** — serial queue with progress, cancel, resume after interruptions, and streaming extract-while-downloading for zips; bundled 7-Zip for `.7z`. Every extracted game gets exactly one folder under the install path.
 - **Multiple install paths** per platform, with a prompt to choose when more than one is configured.
 - **Play** — direct on Windows; through **Faugus Launcher** on Linux; or via **Add to Steam** with live name / cover art / Proton configuration when Decky is present.
-- **Folders…** — one click to a game's install folder or its Proton-side saves and configs.
+- **Saves & Folders…** — one click to a game's install folder or its Proton-side saves and configs; save backup, restore and RomM cloud sync per game.
+- **Update check** — a daily, unauthenticated request to GitHub's releases API tells you when a newer release exists (Settings → Display → Updates; never installs anything by itself).
 - **Add to Steam** with a byte-safe `shortcuts.vdf` writer (covered by tests against a real Steam file) + desktop shortcuts.
 - **Controller navigation**, **10 themes** including Steam Deck OLED orange, and **UI scaling** for the Deck's screen.
 - **Cross-platform** — Steam Deck, Linux, Windows, macOS.
@@ -194,14 +197,14 @@ docker run --rm --user "$(id -u):$(id -g)" -e HOME=/work/.home -v "$PWD":/work -
 ### Layout
 
 ```
-src/           Electron main process — window, IPC, RomM client, config, downloads, Steam (shortcuts.vdf + live SteamClient bridge), Faugus launcher, prefix resolution, Deck detection
+src/           Electron main process — window, IPC, RomM client, config, downloads, Steam (shortcuts.vdf + live SteamClient bridge), Faugus launcher, prefix resolution, saves + cloud sync, save-location lookup, update check, Deck detection
 renderer/      UI — plain HTML/CSS/JS, no framework
 scripts/       add-r2sd-to-steam.js (standalone "add R2SD to Steam" helper), publish-release.py
 test/          node:test suites (run against the compiled dist/)
 build/         App icons + electron-builder afterPack hook
 ```
 
-App data lives in `%APPDATA%\romm2steamdeck-app` (Windows) or `~/.config/romm2steamdeck-app` (Linux/macOS): `config.json`, `downloads.json` (what's installed where), the cached library, and cover art. **Settings → Clear Cache** removes the cached library and covers; it never touches your games.
+App data lives in `%APPDATA%\romm2steamdeck-app` (Windows) or `~/.config/romm2steamdeck-app` (Linux/macOS): `config.json`, `downloads.json` (what's installed where, plus each game's cloud-sync point and save locations), the cached library, cover art, and on Windows `save-locations.json` (the reduced Ludusavi manifest). **Settings → Clear Cache** removes the cached library and covers; it never touches your games.
 
 ---
 
@@ -209,6 +212,7 @@ App data lives in `%APPDATA%\romm2steamdeck-app` (Windows) or `~/.config/romm2st
 
 - **[RomM](https://github.com/rommapp/romm)** — the excellent ROM manager and API this app is built around.
 - **[Faugus Launcher](https://github.com/Faugus/faugus-launcher)** — the easy way to run Windows games on Linux; R2SD's Play button leans on it.
+- **[Ludusavi manifest](https://github.com/mtkennerly/ludusavi-manifest)** (MIT) and **[PCGamingWiki](https://www.pcgamingwiki.com/)** — the save-location data behind Windows cloud saves.
 - **[DeckRommSync-Standalone](https://github.com/PeriBluGaming/DeckRommSync-Standalone)** by PeriBluGaming — the original inspiration for this project.
 
 ## License
