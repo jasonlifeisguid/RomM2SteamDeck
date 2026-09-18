@@ -455,6 +455,31 @@ async function cloudDeps(romId: number): Promise<cloud.CloudDeps> {
   };
 }
 
+// ── Running game ───────────────────────────────────────────────────────────
+// While a game launched from Play runs, R2SD must not react to the controller:
+// the Gamepad API keeps delivering the game's button presses to our window
+// (seen on Hyprland: A-presses in a game opened cards and started downloads).
+// The renderer ignores the gamepad while `game:running` is in effect and the
+// window is minimized out of the way; both are undone when the game exits.
+let runningGame: { romId: number; minimized: boolean } | null = null;
+/** Under gamescope (Steam Deck Game Mode) windows aren't minimized — the compositor switches to the game itself. */
+const underGamescope = () => !!process.env.GAMESCOPE_WAYLAND_DISPLAY || /gamescope/i.test(process.env.XDG_CURRENT_DESKTOP || '');
+
+function gameStarted(romId: number, gameName: string, exitTracked: boolean): void {
+  const minimize = config.getPublicConfig().playWindow !== 'stay' && !underGamescope() && !!mainWindow && !mainWindow.isDestroyed();
+  runningGame = { romId, minimized: minimize };
+  send('game:running', { romId, gameName, exitTracked });
+  if (minimize) mainWindow!.minimize();
+}
+
+function gameExited(romId: number, gameName: string): void {
+  const wasMinimized = runningGame?.romId === romId && runningGame.minimized;
+  if (runningGame?.romId === romId) runningGame = null;
+  send('game:exited', { romId, gameName });
+  // Bring R2SD back only if it is still where we put it (the user may have restored it themselves)
+  if (wasMinimized && mainWindow && !mainWindow.isDestroyed() && mainWindow.isMinimized()) { mainWindow.restore(); mainWindow.focus(); }
+}
+
 /** The target auto-sync is allowed to touch: the game's own prefix (never Faugus's shared
  *  default), or on Windows the real profile (scoped to the game's save locations). */
 function ownTargetFor(romId: number): saves.SaveTarget | null {
@@ -641,15 +666,18 @@ function registerIpc(): void {
       title: rec?.romName,
       coverPng,
       gameFolder: gameFolders(romId).gameFolder || undefined,
-      onExit: autoCloud ? async () => {
+      onExit: async () => {
+        gameExited(romId, gameName);
+        if (!autoCloud) return;
         // Re-resolve: the prefix now exists (and the registration may have
         // chosen a suffixed id if the title clashed).
         const tgt = ownTargetFor(romId) || cloudTarget;
         if (!tgt) return;
         const action = await cloud.afterExit(await cloudDeps(romId), romId, tgt, gameName);
         send('cloud:event', { romId, gameName, ...action });
-      } : undefined,
+      },
     });
+    if (res.ok) gameStarted(romId, gameName, res.exitTracked === true);
     return { ...res, cloud: cloudAction };
   });
 

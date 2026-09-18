@@ -1548,6 +1548,18 @@ const UPDATE_OPTIONS = [
   { value: 'off', label: 'Off' },
 ];
 
+const PLAY_WINDOW_OPTIONS = [
+  { value: 'minimize', label: 'Minimize R2SD' },
+  { value: 'stay', label: 'Stay open' },
+];
+
+function renderPlayWindowSetting(cfg) {
+  setDropdownValue('cfg-playwindow', cfg.playWindow || 'minimize');
+  $('cfg-playwindow-hint').textContent = cfg.playWindow === 'stay'
+    ? 'R2SD stays where it is; the controller is ignored until the game exits'
+    : 'Gets R2SD out of the way while the game runs, then brings it back';
+}
+
 function renderUpdateSetting(cfg) {
   setDropdownValue('cfg-updates', cfg.updateCheck || 'auto');
   $('cfg-updates-hint').textContent = cfg.updateCheck === 'off'
@@ -1588,6 +1600,7 @@ async function openSettings() {
   window.r2sd.getUiScaleInfo().then(renderUiScale);
   renderFaugusSetting(cfg);
   renderUpdateSetting(cfg);
+  renderPlayWindowSetting(cfg);
   window.r2sd.getVersion().then((v) => { $('cfg-version').textContent = v ? `v${v}` : ''; });
   $('cfg-url').value = cfg.baseUrl;
   $('cfg-username').value = cfg.username;
@@ -1697,7 +1710,22 @@ function gpBack() {
   closePlatformsModal();
 }
 
+// A game launched from Play gets the controller; R2SD must not. Set/cleared by
+// the main process around the game's lifetime (game:running / game:exited).
+// Untracked launches (bare-exe Faugus, i.e. no exit signal) stay "running"
+// until the user brings R2SD back to the front.
+let gameRunning = null; // null | 'tracked' | 'untracked'
+window.r2sd.onGameRunning((e) => { gameRunning = e.exitTracked ? 'tracked' : 'untracked'; gp.prev = { a: true, b: true }; });
+window.r2sd.onGameExited(() => { gameRunning = null; gp.prev = { a: true, b: true }; });
+window.addEventListener('focus', () => { if (gameRunning === 'untracked') gameRunning = null; gp.prev = { a: true, b: true }; });
+
+/** Only a focused, visible R2SD with no game running reads the controller. */
+function gpMayRead() {
+  return !gameRunning && document.visibilityState === 'visible' && document.hasFocus();
+}
+
 function gpPoll() {
+  if (!gpMayRead()) { gp.prev = { a: true, b: true }; return; } // held buttons don't fire on return either
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   const pad = [...pads].find((p) => p);
   if (pad) {
@@ -1771,6 +1799,8 @@ setDropdownOptions('cfg-faugusprefix', FAUGUS_PREFIX_OPTIONS, 'per-game');
 initDropdown('cfg-cloud', async (value) => { renderFaugusSetting(await window.r2sd.setConfig({ cloudSaves: value })); });
 setDropdownOptions('cfg-cloud', CLOUD_OPTIONS, 'off');
 initDropdown('cfg-updates', async (value) => { renderUpdateSetting(await window.r2sd.setConfig({ updateCheck: value })); });
+initDropdown('cfg-playwindow', async (value) => { renderPlayWindowSetting(await window.r2sd.setConfig({ playWindow: value })); });
+setDropdownOptions('cfg-playwindow', PLAY_WINDOW_OPTIONS, 'minimize');
 setDropdownOptions('cfg-updates', UPDATE_OPTIONS, 'auto');
 $('btn-check-updates').addEventListener('click', async () => {
   const btn = $('btn-check-updates');

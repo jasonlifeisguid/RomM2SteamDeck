@@ -66,6 +66,10 @@ contextBridge.exposeInMainWorld('r2sd', {
   openReleasePage: (url?: string) => ipcRenderer.invoke('update:open', url),
   onUpdateAvailable: (cb: (payload: unknown) => void) =>
     ipcRenderer.on('update:available', (_e, payload) => cb(payload)),
+  onGameRunning: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('game:running', (_e, payload) => cb(payload)),
+  onGameExited: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('game:exited', (_e, payload) => cb(payload)),
   onCloudEvent: (cb: (payload: unknown) => void) =>
     ipcRenderer.on('cloud:event', (_e, payload) => cb(payload)),
   restoreSaves: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:restore', romId, prefixRoot),

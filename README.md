@@ -91,6 +91,7 @@ Windows games (RomM's *Windows* platform, or any platform you've set to **Extrac
 
 - **On Windows**, Play runs the executable directly.
 - **On Linux / Steam Deck**, a Windows `.exe` needs Proton. You have two routes:
+- **While the game runs, R2SD gets out of the way.** The Gamepad API keeps feeding a controller's presses to every window that polls it, so a game's A-button used to land on R2SD's library too. Now R2SD ignores the controller while a game launched from Play is running (and whenever its window isn't focused), and minimizes itself until the game exits (**Settings → Display → On Play** to keep it open instead). Under gamescope on the Deck nothing is minimized — the compositor switches to the game itself.
 
 ### Route A — Faugus Launcher (recommended: install once, then just press Play)
 

@@ -43,6 +43,7 @@ interface StoredConfig {
   updateCheck: 'auto' | 'off'; // ask GitHub for a newer release on startup
   updateCheckedAt: number;     // last check (ms epoch), so startup checks are at most daily
   updateSkip: string;          // a version the user chose not to be told about again
+  playWindow: 'minimize' | 'stay'; // minimize R2SD while a game launched from Play runs
 }
 
 export interface PublicConfig {
@@ -68,6 +69,7 @@ export interface PublicConfig {
   updateCheck: 'auto' | 'off';
   updateCheckedAt: number;
   updateSkip: string;
+  playWindow: 'minimize' | 'stay';
 }
 
 const DEFAULTS: StoredConfig = {
@@ -75,7 +77,7 @@ const DEFAULTS: StoredConfig = {
   pinnedPlatforms: [], platforms: {}, basePath: '', stagingPath: '', uiScale: 'auto', faugus: 'auto',
   installedOnly: false, faugusPrefix: 'per-game',
   cloudSaves: 'off', saveExcludes: DEFAULT_CONFIG_EXCLUDES, rommDeviceId: '',
-  updateCheck: 'auto', updateCheckedAt: 0, updateSkip: '',
+  updateCheck: 'auto', updateCheckedAt: 0, updateSkip: '', playWindow: 'minimize',
 };
 
 // Overridable so modules that read config can run under plain Node in tests.
@@ -192,6 +194,7 @@ export function getPublicConfig(): PublicConfig {
     updateCheck: stored.updateCheck === 'off' ? 'off' : 'auto',
     updateCheckedAt: typeof stored.updateCheckedAt === 'number' ? stored.updateCheckedAt : 0,
     updateSkip: typeof stored.updateSkip === 'string' ? stored.updateSkip : '',
+    playWindow: stored.playWindow === 'stay' ? 'stay' : 'minimize',
   };
 }
 
@@ -210,7 +213,7 @@ export function setConfig(update: {
   pinnedPlatforms?: number[]; platforms?: Record<string, PlatformSetup>;
   basePath?: string; stagingPath?: string; uiScale?: string; faugus?: string; faugusPrefix?: string; installedOnly?: boolean;
   cloudSaves?: string; saveExcludes?: string[]; rommDeviceId?: string;
-  updateCheck?: string; updateCheckedAt?: number; updateSkip?: string;
+  updateCheck?: string; updateCheckedAt?: number; updateSkip?: string; playWindow?: string;
 }): PublicConfig {
   // Copy before mutating so a failed write can't leave the memo half-updated.
   const stored: StoredConfig = { ...load().stored };
@@ -230,6 +233,7 @@ export function setConfig(update: {
   if (update.updateCheck !== undefined) stored.updateCheck = update.updateCheck === 'off' ? 'off' : 'auto';
   if (update.updateCheckedAt !== undefined) stored.updateCheckedAt = Number(update.updateCheckedAt) || 0;
   if (update.updateSkip !== undefined) stored.updateSkip = String(update.updateSkip);
+  if (update.playWindow !== undefined) stored.playWindow = update.playWindow === 'stay' ? 'stay' : 'minimize';
   if (update.pinnedPlatforms !== undefined) {
     stored.pinnedPlatforms = (Array.isArray(update.pinnedPlatforms) ? update.pinnedPlatforms : [])
       .filter((id) => Number.isInteger(id));
