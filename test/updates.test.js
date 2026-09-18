@@ -34,6 +34,7 @@ test('checkForUpdate reports newer/not-newer from the latest-release payload', a
 test('watchGameExit waits for the child AND for the install folder to go quiet', async () => {
   // Launcher stub: our child exits at once, the real game (in the folder) runs for a while.
   let exited = false; let running = 3;
+  const keepAlive = setInterval(() => {}, 100); // the watcher's timers are unref'd on purpose
   const counts = [];
   const countRunning = async () => { counts.push(running); return running; };
   const done = new Promise((resolve) => {
@@ -42,6 +43,7 @@ test('watchGameExit waits for the child AND for the install folder to go quiet',
   setTimeout(() => { exited = true; }, 20);
   setTimeout(() => { running = 0; }, 60);
   await done;
+  clearInterval(keepAlive);
   // While the child was alive nothing was polled; afterwards the folder was seen busy before two idle ticks
   assert.ok(counts.some((c) => c > 0));
   assert.deepEqual(counts.slice(-2), [0, 0]);

@@ -50,7 +50,7 @@ export function titleCandidates(parts: { name?: string; fsName?: string; folder?
   const push = (s: string | undefined) => { const n = s ? normalizeTitle(s) : ''; if (n && !out.includes(n)) out.push(n); };
   push(parts.name);
   if (parts.fsName) push(parts.fsName.replace(/\.[a-z0-9]{1,4}$/i, '').replace(/[[(][^\])]*[\])]/g, ''));
-  if (parts.folder) push(path.basename(parts.folder).replace(/[[(][^\])]*[\])]/g, ''));
+  if (parts.folder) push((parts.folder.split(/[\\/]/).filter(Boolean).pop() || '').replace(/[[(][^\])]*[\])]/g, ''));
   return out;
 }
 
