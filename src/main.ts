@@ -631,9 +631,28 @@ function registerIpc(): void {
   });
 
   // Set a game's default exe and launch it
+  // Changing which executable Play runs. On Linux with per-game prefixes the
+  // game may already be in Faugus's library under the OLD exe; repoint that
+  // entry instead of letting the next launch register a second one with its
+  // own (empty) prefix. An empty exePath clears the choice.
   ipcMain.handle('game:setDefaultExe', (_e, romId: number, exePath: string) => {
+    const rec = downloads.findDownload(romId);
+    const previous = rec?.defaultExe || '';
+    if (!exePath) {
+      downloads.updateRecord(romId, { defaultExe: '' });
+      return { ok: true, cleared: true };
+    }
     const exe = exeForRom(romId, exePath);
-    return exe ? downloads.setDefaultExe(romId, exe) : false;
+    if (!exe) return { ok: false, error: EXE_OUTSIDE_GAME };
+    if (!downloads.setDefaultExe(romId, exe)) return { ok: false, error: 'Game is not tracked as installed' };
+    let repointed: { gameId?: string; prefix?: string; error?: string } | undefined;
+    const cfg = config.getPublicConfig();
+    if (process.platform === 'linux' && previous && previous !== exe && cfg.faugus !== 'off' && cfg.faugusPrefix !== 'shared') {
+      const r = faugus.repointGame(previous, exe);
+      if (!r.ok) repointed = { error: r.error };
+      else if (!r.notFound) repointed = { gameId: r.gameId, prefix: r.prefix };
+    }
+    return { ok: true, exe, faugus: repointed };
   });
   ipcMain.handle('game:launch', async (_e, romId: number, exePath?: string, coverPath?: string) => {
     if (exePath) {

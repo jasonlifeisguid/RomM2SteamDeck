@@ -3,7 +3,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const path = require('path').posix; // the module is Linux-only and uses POSIX paths
 
-const { findFaugus, findRegisteredGameId, buildLaunch, gamesJsonPath, FLATPAK_APP_ID, formatTitle, readFaugusConfig, registerGame } = require('../dist/faugus.js');
+const { findFaugus, findRegisteredGameId, buildLaunch, gamesJsonPath, FLATPAK_APP_ID, formatTitle, readFaugusConfig, registerGame, repointGame } = require('../dist/faugus.js');
 
 const HOME = '/home/deck';
 function fakeEnv({ files = [], dirs = {}, contents = {}, platform = 'linux', pathDirs = ['/usr/bin', '/usr/local/bin'], uiRunning = false } = {}) {
@@ -153,3 +153,56 @@ test('registerGame refuses while the Faugus window is open, and on a malformed f
   assert.equal(bad.ok, false); assert.match(bad.error, /not a list/);
 });
 
+
+// ── repointGame: changing which exe a registered game uses ─────────────────
+
+const REPOINT_ENTRY = [{
+  gameid: 'stellar-blade', title: 'Stellar Blade', path: '/g/SB/launcher.exe',
+  prefix: '/home/deck/Faugus/stellar-blade', runner: 'Proton-CachyOS Latest', cover: '/covers/sb.png',
+}];
+
+test('repointGame moves an existing entry to a new exe, keeping gameid/prefix/cover', () => {
+  const env = fakeEnv({ contents: { [GAMES_JSON]: JSON.stringify(REPOINT_ENTRY) } });
+  const res = repointGame('/g/SB/launcher.exe', '/g/SB/bin/SB-Win64-Shipping.exe', env);
+  assert.deepEqual(res, { ok: true, gameId: 'stellar-blade', prefix: '/home/deck/Faugus/stellar-blade' });
+  const written = JSON.parse(env.written[GAMES_JSON]);
+  assert.equal(written.length, 1, 'no duplicate entry');
+  assert.deepEqual(written[0], { ...REPOINT_ENTRY[0], path: '/g/SB/bin/SB-Win64-Shipping.exe' });
+  assert.deepEqual(env.copied, [[GAMES_JSON, GAMES_JSON + '.r2sd-bak']]);
+});
+
+test('repointGame + registerGame: the pair never creates a second prefix for one game', () => {
+  const env = fakeEnv({
+    contents: {
+      [GAMES_JSON]: JSON.stringify(REPOINT_ENTRY),
+      [CFG]: JSON.stringify({ 'default-prefix': '/home/deck/Faugus', 'default-runner': 'Proton-CachyOS Latest' }),
+    },
+  });
+  // Without the repoint, registering the new exe would make "stellar-blade-2" with its own prefix
+  const naive = registerGame({ title: 'Stellar Blade', exePath: '/g/SB/bin/SB-Win64-Shipping.exe' }, fakeEnv({
+    contents: { [GAMES_JSON]: JSON.stringify(REPOINT_ENTRY), [CFG]: JSON.stringify({ 'default-prefix': '/home/deck/Faugus', 'default-runner': 'x' }) },
+  }));
+  assert.equal(naive.gameId, 'stellar-blade-2');
+  assert.equal(naive.prefix, '/home/deck/Faugus/stellar-blade-2');
+  // With the repoint first, the next launch finds the entry and reuses prefix + saves
+  repointGame('/g/SB/launcher.exe', '/g/SB/bin/SB-Win64-Shipping.exe', env);
+  const after = registerGame({ title: 'Stellar Blade', exePath: '/g/SB/bin/SB-Win64-Shipping.exe' }, env);
+  assert.deepEqual(after, { ok: true, gameId: 'stellar-blade', prefix: '/home/deck/Faugus/stellar-blade', existing: true });
+  assert.equal(JSON.parse(env.written[GAMES_JSON]).length, 1);
+});
+
+test('repointGame: unknown old exe is a no-op, and it refuses while the Faugus UI is open', () => {
+  const env = fakeEnv({ contents: { [GAMES_JSON]: JSON.stringify(REPOINT_ENTRY) } });
+  assert.deepEqual(repointGame('/g/other/other.exe', '/g/SB/x.exe', env), { ok: true, notFound: true });
+  assert.equal(env.written[GAMES_JSON], undefined, 'nothing written');
+  assert.deepEqual(repointGame('/g/SB/launcher.exe', '/g/SB/launcher.exe', env), { ok: true, gameId: 'stellar-blade', prefix: '/home/deck/Faugus/stellar-blade' });
+
+  const busy = fakeEnv({ contents: { [GAMES_JSON]: JSON.stringify(REPOINT_ENTRY) }, uiRunning: true });
+  const res = repointGame('/g/SB/launcher.exe', '/g/SB/bin/new.exe', busy);
+  assert.equal(res.ok, false);
+  assert.match(res.error, /Faugus Launcher is open/);
+  assert.equal(busy.written[GAMES_JSON], undefined);
+
+  // no games.json at all
+  assert.deepEqual(repointGame('/a.exe', '/b.exe', fakeEnv()), { ok: true, notFound: true });
+});

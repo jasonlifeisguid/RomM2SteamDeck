@@ -84,6 +84,11 @@
             <button id="btn-dl-delete" class="secondary danger" hidden>Delete from disk</button>
             <span id="detail-dl-status" class="small muted"></span>
           </div>
+          <div id="detail-exe-row" class="detail-exe" hidden>
+            <span class="muted">Play runs</span>
+            <code id="detail-exe-path"></code>
+            <button id="btn-change-exe" class="linkish" title="Pick a different executable for this game">Change&hellip;</button>
+          </div>
           <div class="dl-bar" id="detail-dl-bar" hidden><div class="dl-bar-fill"></div></div>
         </div>
       </div>
@@ -133,8 +138,8 @@
   <div id="exe-modal" class="modal" hidden>
     <div class="modal-backdrop" id="exe-backdrop"></div>
     <div class="modal-card exe-card">
-      <h2>Add Game Shortcut</h2>
-      <p class="small muted mb-10">Select the executable to launch, then add it to Steam or create a desktop shortcut:</p>
+      <h2 id="exe-title">Choose Executable</h2>
+      <p class="small muted mb-10" id="exe-subtitle">Pick the executable this game launches with. You can change it later from the game's details.</p>
       <div id="exe-list" class="exe-list"></div>
       <div id="exe-faugus-tip" class="steamdeck-tip faugus-tip" hidden>
         <strong>&#9654; Play</strong> runs this through <strong>Faugus Launcher</strong> (Proton) &mdash; no Steam step needed.
@@ -154,8 +159,9 @@
       </div>
       <div class="modal-actions">
         <span class="spacer"></span>
+        <button id="exe-clear" class="secondary" hidden title="Forget the chosen executable, so Play asks again">Clear</button>
         <button id="exe-cancel" class="secondary">Cancel</button>
-        <button id="exe-setdefault" class="secondary" disabled>&#9733; Set Default</button>
+        <button id="exe-setdefault" class="secondary" disabled title="Play, Add to Steam and desktop shortcuts use this executable">&#9733; Use This</button>
         <button id="exe-shortcut" class="secondary" disabled>Desktop Shortcut</button>
         <button id="exe-play" class="secondary" disabled>&#9654; Play</button>
         <button id="exe-steam" class="primary" disabled hidden>Add to Steam</button>

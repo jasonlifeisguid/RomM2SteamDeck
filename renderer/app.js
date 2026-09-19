@@ -580,6 +580,7 @@ function showContextMenu(e, rom) {
   } else if (downloaded) {
     if (setup.autoExtract) {
       item('▶ Play', () => playGame(rom));
+      item('Choose executable…', () => openExePicker(rom));
       item('Add to Steam / Shortcut…', () => openExePicker(rom));
     }
     item('Saves & Folders…', () => openFoldersModal(rom));
@@ -954,6 +955,17 @@ function refreshDetailActions() {
   playBtn.hidden = !(record && setup.autoExtract && !inQueue);
   $('btn-folders').hidden = !(record && record.filePath && !inQueue);
   playBtn.textContent = record && record.defaultExe ? '▶ Play' : '▶ Play…';
+  // What Play actually runs — and a way back to the picker when it's the wrong exe
+  const exeRow = $('detail-exe-row');
+  const showExe = Boolean(record && record.defaultExe && setup.autoExtract && !inQueue);
+  exeRow.hidden = !showExe;
+  if (showExe) {
+    const full = record.defaultExe;
+    const rel = record.filePath && full.startsWith(record.filePath) ? full.slice(record.filePath.length).replace(/^[\\/]+/, '') : full;
+    const el = $('detail-exe-path');
+    el.textContent = rel;
+    el.title = full;
+  }
   bar.hidden = !progress;
 
   if (inQueue === 'queued' && !progress) {
@@ -1027,6 +1039,12 @@ let exePickerRom = null;
 async function openExePicker(rom) {
   exePickerRom = rom;
   exeSelected = null;
+  const hadDefault = Boolean(state.downloads.get(rom.id)?.defaultExe);
+  $('exe-title').textContent = hadDefault ? 'Change Executable' : 'Choose Executable';
+  $('exe-subtitle').textContent = hadDefault
+    ? 'Pick the executable this game launches with. ★ is the current one.'
+    : 'Pick the executable this game launches with. You can change it later from the game\'s details.';
+  $('exe-clear').hidden = !hadDefault;
   $('exe-shortcut').disabled = true;
   $('exe-steam').disabled = true;
   $('exe-play').disabled = true;
@@ -1105,12 +1123,30 @@ async function createShortcut() {
 async function setDefaultFromPicker() {
   if (!exeSelected || !exePickerRom) return;
   const rom = exePickerRom;
-  await window.r2sd.setDefaultExe(rom.id, exeSelected.path);
+  const res = await window.r2sd.setDefaultExe(rom.id, exeSelected.path);
   await reloadDownloads();
-  toast('Default executable set', 'success');
+  if (res && res.error) toast(res.error, 'error');
+  else toast(`Play now runs ${exeSelected.relativePath}`, 'success');
+  // The game may already be in Faugus under the old exe — the main process
+  // repoints that entry so it keeps its prefix (and its saves).
+  if (res && res.faugus) {
+    if (res.faugus.error) toast(`Faugus not updated: ${res.faugus.error}`, 'error');
+    else toast(`Updated ${res.faugus.gameId} in Faugus — same prefix, so your saves stay put`, 'success');
+  }
   updateCardBadge(rom.id);
   if (state.detailRom?.id === rom.id) refreshDetailActions();
   openExePicker(rom); // refresh the ★ default marker
+}
+
+async function clearDefaultFromPicker() {
+  if (!exePickerRom) return;
+  const rom = exePickerRom;
+  await window.r2sd.setDefaultExe(rom.id, '');
+  await reloadDownloads();
+  closeExePicker();
+  toast('Cleared — Play will ask which executable to use', 'success');
+  updateCardBadge(rom.id);
+  if (state.detailRom?.id === rom.id) refreshDetailActions();
 }
 
 function launchToast(rom, res) {
@@ -1987,6 +2023,8 @@ $('exe-shortcut').addEventListener('click', createShortcut);
 $('exe-steam').addEventListener('click', addToSteam);
 $('exe-play').addEventListener('click', playFromPicker);
 $('exe-setdefault').addEventListener('click', setDefaultFromPicker);
+$('exe-clear').addEventListener('click', clearDefaultFromPicker);
+$('btn-change-exe').addEventListener('click', () => state.detailRom && openExePicker(state.detailRom));
 $('btn-play').addEventListener('click', () => state.detailRom && playGame(state.detailRom));
 
 $('btn-platforms').addEventListener('click', () => { closeSettings(); openPlatformsModal(); });

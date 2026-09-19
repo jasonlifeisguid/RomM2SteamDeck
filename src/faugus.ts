@@ -258,6 +258,62 @@ export function findRegisteredGameId(exePath: string, env: Env = realEnv(), json
   }
 }
 
+export interface RepointResult {
+  ok: boolean;
+  /** No entry pointed at the old exe — nothing to do (not an error). */
+  notFound?: boolean;
+  gameId?: string;
+  prefix?: string;
+  error?: string;
+}
+
+/**
+ * Point an existing Faugus entry at a different executable, keeping its
+ * gameid, prefix, cover and runner.
+ *
+ * Why this exists: registration matches by exe path, so picking a different
+ * executable for a game that is already in Faugus would otherwise create a
+ * SECOND entry with a suffixed gameid ("stellar-blade-2") and its own empty
+ * prefix — the game would appear twice in Faugus and its saves would be split
+ * across two prefixes. Repointing keeps one entry and one prefix.
+ */
+export function repointGame(oldExePath: string, newExePath: string, env: Env = realEnv()): RepointResult {
+  const jsonPath = gamesJsonPath(env);
+  let games: Record<string, unknown>[] = [];
+  try {
+    if (!env.exists(jsonPath)) return { ok: true, notFound: true };
+    const parsed = JSON.parse(env.readFile(jsonPath));
+    if (!Array.isArray(parsed)) return { ok: false, error: 'Faugus games.json is not a list — not touching it' };
+    games = parsed;
+  } catch (err) {
+    return { ok: false, error: `Faugus games.json is unreadable: ${err instanceof Error ? err.message : String(err)}` };
+  }
+
+  const expand = (p: string) => (p.startsWith('~/') ? path.join(env.homedir, p.slice(2)) : p);
+  const want = path.resolve(oldExePath);
+  const next = path.resolve(newExePath);
+  const entry = games.find((g) => {
+    const p = typeof g?.path === 'string' ? g.path : '';
+    return p ? path.resolve(expand(p)) === want : false;
+  });
+  if (!entry) return { ok: true, notFound: true };
+  if (path.resolve(expand(String(entry.path))) === next) {
+    return { ok: true, gameId: String(entry.gameid || ''), prefix: typeof entry.prefix === 'string' ? expand(entry.prefix) : '' };
+  }
+  // Same rule as registerGame: Faugus rewrites games.json wholesale on its own saves.
+  if (env.faugusUiRunning()) {
+    return { ok: false, error: 'Faugus Launcher is open — close it so R2SD can update the game in its library' };
+  }
+  entry.path = next;
+  try {
+    if (env.exists(jsonPath)) env.copyFile(jsonPath, `${jsonPath}.r2sd-bak`);
+    env.writeFile(jsonPath, JSON.stringify(games, null, 4) + '\n');
+  } catch (err) {
+    return { ok: false, error: `Could not write Faugus games.json: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  return { ok: true, gameId: String(entry.gameid || ''), prefix: typeof entry.prefix === 'string' ? expand(entry.prefix) : '' };
+}
+
 /** Build the exact command Faugus's own shortcuts would run for this exe. */
 export function buildLaunch(install: FaugusInstall, exePath: string, env: Env = realEnv()): FaugusLaunch {
   const gameId = findRegisteredGameId(exePath, env);

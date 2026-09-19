@@ -124,6 +124,12 @@ A Windows game under Proton keeps its Documents, Saved Games and AppData inside 
 
 **Moving saves by hand.** Each Linux prefix in that dialog also has **Back up saves…** and **Restore saves…**. Back up zips the prefix's Documents, Saved Games and AppData (minus Windows temp and shell folders) into `<game> saves <date>.zip` in a folder you pick — an SD card, a NAS share, a synced folder. Restore extracts such a zip into the prefix, overwriting same-named files and leaving everything else alone. The zip only ever contains those save folders, so restoring a backup made from Faugus's shared `default` prefix into a game's own prefix is also how you migrate saves after switching to per-game prefixes.
 
+### Changing which executable Play runs
+
+The first Play on a downloaded game asks which `.exe` to use, and games often ship several (a launcher, a crash handler, the real thing under `bin/`). Pick the wrong one and you're not stuck: the game's details show **Play runs `<exe>`** with a **Change…** link, and the right-click menu has **Choose executable…**. The picker marks the current one with ★, and **Clear** forgets the choice so Play asks again.
+
+On Linux with per-game prefixes this also fixes up Faugus: the game is already in its library under the old executable, so R2SD repoints that entry instead of letting the next launch create a second one with its own empty prefix — same prefix, so your saves stay where they are.
+
 ### Desktop shortcuts
 
 The same dialog can create a desktop shortcut for any executable (`.lnk` on Windows, `.desktop` on Linux, `.command` on macOS) if you'd rather launch from the desktop.
