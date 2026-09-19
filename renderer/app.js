@@ -1644,6 +1644,15 @@ async function renderFaugusSetting(cfg) {
   $('cfg-faugusprefix-hint').textContent = cfg.faugusPrefix === 'shared'
     ? 'All games share ~/Faugus/default'
     : 'Each game gets its own prefix and appears in Faugus\'s library';
+  // "Run with Faugus" for any .exe on the system, straight from the file manager
+  const fhRow = $('cfg-filehandler-row');
+  fhRow.hidden = !(fg.found && fg.canInstallHandler);
+  if (!fhRow.hidden) {
+    $('btn-filehandler').textContent = fg.fileHandler ? 'Remove from file manager' : 'Add to file manager';
+    $('cfg-filehandler-hint').textContent = fg.fileHandler
+      ? 'Right-click any .exe → Open With → "Run with Faugus (R2SD)"'
+      : 'Adds "Run with Faugus (R2SD)" to the Open With menu for .exe files';
+  }
   const how = { binary: 'system package', appimage: 'AppImage', flatpak: 'Flatpak' }[fg.method] || '';
   $('cfg-faugus-hint').textContent = !fg.found
     ? 'Not installed — Play will point you to Add to Steam'
@@ -1846,6 +1855,17 @@ $('btn-clear-cache').addEventListener('click', async () => {
   $('cfg-test-result').textContent = 'Cache cleared.';
 });
 $('btn-quit').addEventListener('click', () => { window.r2sd.quitApp(); });
+$('btn-filehandler').addEventListener('click', async () => {
+  const btn = $('btn-filehandler');
+  const enable = btn.textContent.startsWith('Add');
+  btn.disabled = true;
+  try {
+    const res = await window.r2sd.setFaugusFileHandler(enable);
+    if (res.error) toast(res.error, 'error');
+    else toast(enable ? 'Added — right-click an .exe and choose Open With' : 'Removed from the file manager', 'success');
+    renderFaugusSetting(await window.r2sd.getConfig());
+  } finally { btn.disabled = false; }
+});
 initDropdown('cfg-uiscale', async (value) => { renderUiScale(await window.r2sd.setUiScale(value)); });
 initDropdown('cfg-faugus', async (value) => { renderFaugusSetting(await window.r2sd.setConfig({ faugus: value })); });
 setDropdownOptions('cfg-faugus', FAUGUS_OPTIONS, 'auto');

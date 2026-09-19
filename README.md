@@ -130,6 +130,20 @@ The first Play on a downloaded game asks which `.exe` to use, and games often sh
 
 On Linux with per-game prefixes this also fixes up Faugus: the game is already in its library under the old executable, so R2SD repoints that entry instead of letting the next launch create a second one with its own empty prefix — same prefix, so your saves stay where they are.
 
+### Any .exe on your system, without the library (Linux)
+
+R2SD's Faugus handling works on Windows games that aren't in RomM at all. Turn it on with **Settings → Display → Any .exe → Add to file manager**, then **right-click any `.exe` → Open With → Run with Faugus (R2SD)**. The first run gives that game its own Faugus prefix, launches it, and leaves a launcher in your app menu, so afterwards it's one click and R2SD isn't involved at all. Running the same `.exe` again just starts the existing entry — no duplicate prefixes.
+
+The same thing from a terminal, where `R2SD` is your AppImage:
+
+```bash
+RomM2SteamDeck.AppImage --run-exe "/games/My Game/bin/Game.exe"
+```
+
+`--title "Name"` overrides the name guessed from the folder, `--shared-prefix` uses Faugus's shared prefix instead of a per-game one, `--no-shortcut` skips the app-menu entry, `--pick` opens a file dialog instead, and `--help` lists everything. These modes never open a window — they work over SSH and from a TTY.
+
+*(Faugus registers itself for `application/x-ms-dos-executable`, but modern `.exe` files report `application/vnd.microsoft.portable-executable`, which is why Open With often offers nothing for them. R2SD's entry claims both.)*
+
 ### Desktop shortcuts
 
 The same dialog can create a desktop shortcut for any executable (`.lnk` on Windows, `.desktop` on Linux, `.command` on macOS) if you'd rather launch from the desktop.

@@ -46,6 +46,7 @@ contextBridge.exposeInMainWorld('r2sd', {
   createShortcut: (romId: number, exePath: string, gameName: string) => ipcRenderer.invoke('shortcut:create', romId, exePath, gameName),
   steamStatus: () => ipcRenderer.invoke('steam:status'),
   faugusStatus: () => ipcRenderer.invoke('faugus:status'),
+  setFaugusFileHandler: (enable: boolean) => ipcRenderer.invoke('faugus:setFileHandler', enable),
   gameFolders: (romId: number) => ipcRenderer.invoke('game:folders', romId),
   openGameFolder: (romId: number, target: string) => ipcRenderer.invoke('game:openFolder', romId, target),
   addToSteam: (romId: number, exePath: string, gameName: string, proton?: boolean, coverPath?: string) =>

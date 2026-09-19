@@ -19,6 +19,7 @@ import * as cloud from './cloudsaves';
 import * as savepaths from './savepaths';
 import * as updates from './updates';
 import * as hypr from './hyprland';
+import * as cli from './cli';
 
 // Cover art and screenshots are served to the renderer over a private scheme
 // that maps only onto the covers cache directory, so the renderer's CSP no
@@ -29,6 +30,18 @@ protocol.registerSchemesAsPrivileged([
   { scheme: ASSET_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: false } },
 ]);
 
+// Command-line modes ("run this exe with Faugus", desktop integration) never
+// open a window. Tell Chromium so up front: without this Electron still brings
+// up its window-system backend and dies on a machine with no display (a TTY,
+// an SSH session, a headless file-manager action).
+const cliArgs = process.platform === 'linux' ? cli.parseArgs(process.argv.slice(app.isPackaged ? 1 : 2)) : null;
+const cliHeadless = !!cliArgs && cliArgs.mode !== 'gui' && cliArgs.mode !== 'pick';
+if (cliHeadless) {
+  app.commandLine.appendSwitch('ozone-platform', 'headless');
+  app.commandLine.appendSwitch('disable-gpu');
+  app.disableHardwareAcceleration();
+}
+
 // Steam Deck / Linux rendering. The black window on SteamOS/Plasma was caused
 // by two flags that were originally added as "safe" defaults but actively broke
 // rendering: --no-sandbox (breaks the GPU buffer path — the namespace sandbox
@@ -38,7 +51,7 @@ protocol.registerSchemesAsPrivileged([
 // harmless stability hedge; verified rendering the full UI on SteamOS. Rendering
 // can still be tuned per-device via env vars without a rebuild
 // (R2SD_GL / R2SD_ANGLE / R2SD_OZONE / R2SD_FLAGS). No-ops on Windows/macOS.
-if (process.platform === 'linux') {
+if (process.platform === 'linux' && !cliHeadless) {
   // Full override for device tuning/diagnostics: R2SD_FLAGS is a space-separated
   // list of Chromium switches ("--no-sandbox --use-gl=angle"); an empty string
   // means "no flags at all". When unset, use the safe defaults plus optional
@@ -815,7 +828,21 @@ function registerIpc(): void {
   // Faugus Launcher (Linux): is it installed, and is Play routed through it?
   ipcMain.handle('faugus:status', () => {
     const install = faugus.findFaugus();
-    return { found: install !== null, method: install?.method ?? null, enabled: config.getPublicConfig().faugus !== 'off' };
+    return {
+      found: install !== null, method: install?.method ?? null, enabled: config.getPublicConfig().faugus !== 'off',
+      // "Run with Faugus" in the file manager's Open With menu (Linux desktop integration)
+      fileHandler: process.platform === 'linux'
+        ? fs.existsSync(path.join(cli.applicationsDir(cli.realDesktopEnv()), cli.HANDLER_DESKTOP_ID))
+        : false,
+      canInstallHandler: process.platform === 'linux' && selfLauncherPath() !== null,
+    };
+  });
+  ipcMain.handle('faugus:setFileHandler', (_e, enable: boolean) => {
+    if (process.platform !== 'linux') return { ok: false, error: 'Linux only' };
+    if (!enable) return cli.uninstallFileHandler();
+    const launcher = selfLauncherPath();
+    if (!launcher) return { ok: false, error: 'Only available in the packaged app (AppImage)' };
+    return cli.installFileHandler(launcher);
   });
 
   // Add to Steam (safe shortcuts.vdf writing)
@@ -1006,8 +1033,70 @@ function clearStaleSingletonLock(): void {
 }
 clearStaleSingletonLock();
 
-// Single instance — a second launch focuses the existing window instead
-if (!app.requestSingleInstanceLock()) {
+/**
+ * Linux command line ("run this exe with Faugus", file-manager integration).
+ * Handled before the single-instance lock and before any window exists, so it
+ * works whether or not the library app is already running. Returns true when
+ * the process has done its job and is exiting.
+ */
+function handleCli(): boolean {
+  const args = cliArgs;
+  if (!args || args.mode === 'gui') return false;
+
+  const done = (code: number) => { app.exit(code); };
+  if (args.mode === 'help') { console.log(cli.HELP); done(0); return true; }
+
+  if (args.mode === 'install-handler' || args.mode === 'uninstall-handler') {
+    const launcher = selfLauncherPath();
+    const res = args.mode === 'install-handler'
+      ? cli.installFileHandler(launcher || '')
+      : cli.uninstallFileHandler();
+    if (!res.ok) { console.error(res.error); done(1); return true; }
+    console.log(`${args.mode === 'install-handler' ? 'Installed' : 'Removed'} ${res.file}`);
+    done(0);
+    return true;
+  }
+
+  if (args.mode === 'pick') {
+    // The only mode that needs a window system: a file dialog, no main window.
+    app.whenReady().then(async () => {
+      const picked = await dialog.showOpenDialog({
+        title: 'Choose a Windows program to run with Faugus',
+        properties: ['openFile'],
+        filters: [{ name: 'Windows programs', extensions: ['exe'] }],
+      });
+      if (picked.canceled || !picked.filePaths[0]) { done(0); return; }
+      runFromCli(picked.filePaths[0], args);
+    });
+    return true;
+  }
+
+  if (!args.exe) { console.error('--run-exe needs a path to a .exe\n'); console.log(cli.HELP); done(2); return true; }
+  runFromCli(args.exe, args);
+  return true;
+}
+
+function runFromCli(exe: string, args: cli.CliArgs): void {
+  const res = cli.runExe(exe, { title: args.title, shared: args.shared, shortcut: args.shortcut });
+  if (!res.ok) {
+    console.error(res.error);
+    cli.notify('Could not start the game', res.error || 'Unknown error', 'critical');
+    app.exit(1);
+    return;
+  }
+  const where = res.registered ? `new prefix, added to Faugus as "${res.title}"` : 'existing Faugus entry';
+  console.log(`Launching ${res.title} (${where})${res.shortcut ? `\nLauncher: ${res.shortcut}` : ''}`);
+  if (res.error) cli.notify(res.title || 'Game', `${res.error} Ran in the shared prefix.`, 'critical');
+  else if (res.registered) cli.notify(`Launching ${res.title}`, 'Added to Faugus with its own prefix. It is in your app menu for next time.');
+  // Exit now, synchronously: Faugus was spawned detached and unref'd, so it
+  // outlives us, and lingering would let Electron carry on booting its window
+  // system — which fails outright on a machine with no display.
+  app.exit(0);
+}
+
+if (handleCli()) {
+  // CLI run: no window, no IPC, no update check.
+} else if (!app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
