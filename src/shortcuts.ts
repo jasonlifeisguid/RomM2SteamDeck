@@ -82,6 +82,8 @@ export interface LaunchResult {
   /** Per-game prefix was wanted but couldn't be set up; ran in the shared prefix. */
   faugusRegisterError?: string;
   exitTracked?: boolean;
+  /** Pid of the process we spawned (the game's windows descend from it). */
+  pid?: number;
   /** What cloud-save sync did before launch (main fills this in). */
   cloud?: import('./cloudsaves').AutoAction;
 }
@@ -142,7 +144,7 @@ export function launchGame(
         perGame: opts.faugusPerGame !== false, title: opts.title, coverPng: opts.coverPng, onExit: opts.onExit,
       });
       return res.ok
-        ? { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId, faugusRegistered: res.registered, faugusRegisterError: res.registerError, exitTracked: res.exitTracked }
+        ? { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId, faugusRegistered: res.registered, faugusRegisterError: res.registerError, exitTracked: res.exitTracked, pid: res.pid }
         : { ok: false, error: `Faugus Launcher failed to start: ${res.error}` };
     }
     return {
@@ -172,9 +174,9 @@ export function launchGame(
       child.on('error', () => { exited = true; });
       const onExit = opts.onExit;
       watchGameExit(opts.gameFolder || path.dirname(exePath), () => exited, () => onExit(null));
-      return { ok: true, exitTracked: true };
+      return { ok: true, exitTracked: true, pid: child.pid };
     }
-    return { ok: true };
+    return { ok: true, pid: child.pid };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

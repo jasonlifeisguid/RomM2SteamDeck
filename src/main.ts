@@ -18,6 +18,7 @@ import * as saves from './saves';
 import * as cloud from './cloudsaves';
 import * as savepaths from './savepaths';
 import * as updates from './updates';
+import * as hypr from './hyprland';
 
 // Cover art and screenshots are served to the renderer over a private scheme
 // that maps only onto the covers cache directory, so the renderer's CSP no
@@ -461,23 +462,39 @@ async function cloudDeps(romId: number): Promise<cloud.CloudDeps> {
 // (seen on Hyprland: A-presses in a game opened cards and started downloads).
 // The renderer ignores the gamepad while `game:running` is in effect and the
 // window is minimized out of the way; both are undone when the game exits.
-let runningGame: { romId: number; minimized: boolean } | null = null;
+let runningGame: { romId: number; minimized: boolean; hyprland: boolean } | null = null;
 /** Under gamescope (Steam Deck Game Mode) windows aren't minimized — the compositor switches to the game itself. */
 const underGamescope = () => !!process.env.GAMESCOPE_WAYLAND_DISPLAY || /gamescope/i.test(process.env.XDG_CURRENT_DESKTOP || '');
 
-function gameStarted(romId: number, gameName: string, exitTracked: boolean): void {
-  const minimize = config.getPublicConfig().playWindow !== 'stay' && !underGamescope() && !!mainWindow && !mainWindow.isDestroyed();
-  runningGame = { romId, minimized: minimize };
+function gameStarted(romId: number, gameName: string, exitTracked: boolean, launcherPid?: number): void {
+  const cfg = config.getPublicConfig();
+  // Hyprland has no minimize; the equivalent is the game on a fresh workspace (hyprland.ts).
+  // Only possible when we know the launcher pid and will hear about the exit.
+  const useHypr = hypr.isHyprland() && cfg.playWorkspace !== 'off' && !!launcherPid && exitTracked && !underGamescope();
+  const minimize = cfg.playWindow !== 'stay' && !underGamescope() && !useHypr && !!mainWindow && !mainWindow.isDestroyed();
+  runningGame = { romId, minimized: minimize, hyprland: useHypr };
   send('game:running', { romId, gameName, exitTracked });
   if (minimize) mainWindow!.minimize();
+  if (useHypr) {
+    hypr.presentGame(hypr.realEnv(), launcherPid!, { mode: cfg.playWorkspace === 'workspace' ? 'workspace' : 'fullscreen', isRunning: () => runningGame?.romId === romId })
+      .then((r) => { if (r.windows) console.log(`hyprland: ${gameName} on workspace ${r.workspace} (${r.windows} window${r.windows === 1 ? '' : 's'})`); })
+      .catch((err) => console.error('hyprland presentation failed:', err));
+  }
 }
 
 function gameExited(romId: number, gameName: string): void {
   const wasMinimized = runningGame?.romId === romId && runningGame.minimized;
+  const wasHypr = runningGame?.romId === romId && runningGame.hyprland;
   if (runningGame?.romId === romId) runningGame = null;
   send('game:exited', { romId, gameName });
   // Bring R2SD back only if it is still where we put it (the user may have restored it themselves)
   if (wasMinimized && mainWindow && !mainWindow.isDestroyed() && mainWindow.isMinimized()) { mainWindow.restore(); mainWindow.focus(); }
+  if (wasHypr && mainWindow && !mainWindow.isDestroyed()) {
+    // The game's workspace is gone with its last window; jump back to R2SD's
+    const hy = hypr.realEnv();
+    hypr.findByClass(hy, 'romm2steamdeck').then((w) => { if (w) return hypr.focusWindow(hy, w.address); }).catch(() => { /* cosmetic */ });
+    mainWindow.focus();
+  }
 }
 
 /** The target auto-sync is allowed to touch: the game's own prefix (never Faugus's shared
@@ -592,6 +609,7 @@ function registerIpc(): void {
 
   // Host OS (renderer gates the Steam Deck tip on this)
   ipcMain.handle('app:platform', () => process.platform);
+  ipcMain.handle('app:desktop', () => ({ hyprland: hypr.isHyprland(), gamescope: underGamescope() }));
   ipcMain.handle('app:version', () => app.getVersion());
   // Clean quit — essential in Game Mode, where there's no window chrome to close.
   // Use app.exit(0), not app.quit(): a graceful quit can stall on a lingering
@@ -677,7 +695,7 @@ function registerIpc(): void {
         send('cloud:event', { romId, gameName, ...action });
       },
     });
-    if (res.ok) gameStarted(romId, gameName, res.exitTracked === true);
+    if (res.ok) gameStarted(romId, gameName, res.exitTracked === true, res.pid);
     return { ...res, cloud: cloudAction };
   });
 

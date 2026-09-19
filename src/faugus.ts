@@ -276,6 +276,8 @@ export interface LaunchResult {
   registerError?: string;
   /** onExit will fire when the game closes (only for `--game` launches). */
   exitTracked?: boolean;
+  /** The launcher child's pid (the game's windows are its descendants). */
+  pid?: number;
 }
 
 /**
@@ -309,7 +311,7 @@ export function launchWithFaugus(
     // waits for the game — so 'exit' means the game closed. (The bare-exe path
     // returns immediately after handing off; exit tracking only works per-game.)
     if (opts.onExit && launch.gameId) child.on('exit', (code) => opts.onExit!(code));
-    return { ok: true, via: install.method, gameId: launch.gameId, registered, registerError, exitTracked: Boolean(opts.onExit && launch.gameId) };
+    return { ok: true, via: install.method, gameId: launch.gameId, registered, registerError, exitTracked: Boolean(opts.onExit && launch.gameId), pid: child.pid };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

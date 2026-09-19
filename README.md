@@ -92,6 +92,7 @@ Windows games (RomM's *Windows* platform, or any platform you've set to **Extrac
 - **On Windows**, Play runs the executable directly.
 - **On Linux / Steam Deck**, a Windows `.exe` needs Proton. You have two routes:
 - **While the game runs, R2SD gets out of the way.** The Gamepad API keeps feeding a controller's presses to every window that polls it, so a game's A-button used to land on R2SD's library too. Now R2SD ignores the controller while a game launched from Play is running (and whenever its window isn't focused), and minimizes itself until the game exits (**Settings → Display → On Play** to keep it open instead). Under gamescope on the Deck nothing is minimized — the compositor switches to the game itself.
+- **Hyprland (Omarchy and friends): the game gets its own workspace.** Hyprland has no minimize, so R2SD does what a Hyprland user would do by hand: it watches for the game's windows after Play (recognised by process ancestry, several forks below Faugus), moves the first one to a fresh workspace, follows it there and fullscreens it; splash dialogs are moved but left windowed; when the game exits R2SD takes focus back. **Settings → Display → On Play** offers *Own workspace, fullscreen* (default), *Own workspace* or *Leave to Hyprland*. Works with both the Lua-config dispatcher dialect (Hyprland 0.56+) and the classic one.
 
 ### Route A — Faugus Launcher (recommended: install once, then just press Play)
 

@@ -1553,11 +1553,30 @@ const PLAY_WINDOW_OPTIONS = [
   { value: 'stay', label: 'Stay open' },
 ];
 
-function renderPlayWindowSetting(cfg) {
+const PLAY_WORKSPACE_OPTIONS = [
+  { value: 'fullscreen', label: 'Own workspace, fullscreen' },
+  { value: 'workspace', label: 'Own workspace' },
+  { value: 'off', label: 'Leave to Hyprland' },
+];
+
+async function renderPlayWindowSetting(cfg) {
   setDropdownValue('cfg-playwindow', cfg.playWindow || 'minimize');
   $('cfg-playwindow-hint').textContent = cfg.playWindow === 'stay'
     ? 'R2SD stays where it is; the controller is ignored until the game exits'
     : 'Gets R2SD out of the way while the game runs, then brings it back';
+  const desk = await window.r2sd.getDesktop();
+  $('cfg-playworkspace-row').hidden = !desk.hyprland;
+  if (desk.hyprland) {
+    setDropdownValue('cfg-playworkspace', cfg.playWorkspace || 'fullscreen');
+    $('cfg-playworkspace-hint').textContent = {
+      fullscreen: 'The game opens on a fresh workspace and goes fullscreen; R2SD gets focus back when it exits',
+      workspace: 'The game opens on a fresh workspace; window size is left alone',
+      off: 'No workspace or fullscreen changes',
+    }[cfg.playWorkspace || 'fullscreen'];
+    $('cfg-playwindow-row').hidden = cfg.playWorkspace !== 'off'; // minimize is meaningless on Hyprland when the game gets its own workspace
+  } else {
+    $('cfg-playwindow-row').hidden = false;
+  }
 }
 
 function renderUpdateSetting(cfg) {
@@ -1800,6 +1819,8 @@ initDropdown('cfg-cloud', async (value) => { renderFaugusSetting(await window.r2
 setDropdownOptions('cfg-cloud', CLOUD_OPTIONS, 'off');
 initDropdown('cfg-updates', async (value) => { renderUpdateSetting(await window.r2sd.setConfig({ updateCheck: value })); });
 initDropdown('cfg-playwindow', async (value) => { renderPlayWindowSetting(await window.r2sd.setConfig({ playWindow: value })); });
+initDropdown('cfg-playworkspace', async (value) => { renderPlayWindowSetting(await window.r2sd.setConfig({ playWorkspace: value })); });
+setDropdownOptions('cfg-playworkspace', PLAY_WORKSPACE_OPTIONS, 'fullscreen');
 setDropdownOptions('cfg-playwindow', PLAY_WINDOW_OPTIONS, 'minimize');
 setDropdownOptions('cfg-updates', UPDATE_OPTIONS, 'auto');
 $('btn-check-updates').addEventListener('click', async () => {

@@ -39,6 +39,7 @@ contextBridge.exposeInMainWorld('r2sd', {
 
   // Desktop shortcuts
   getPlatform: () => ipcRenderer.invoke('app:platform'),
+  getDesktop: () => ipcRenderer.invoke('app:desktop'),
   getVersion: () => ipcRenderer.invoke('app:version'),
   quitApp: () => ipcRenderer.invoke('app:quit'),
   listExes: (romId: number) => ipcRenderer.invoke('game:listExes', romId),
