@@ -1590,9 +1590,9 @@ const PLAY_WINDOW_OPTIONS = [
 ];
 
 const PLAY_WORKSPACE_OPTIONS = [
+  { value: 'off', label: 'Leave to Hyprland' },
   { value: 'fullscreen', label: 'Own workspace, fullscreen' },
   { value: 'workspace', label: 'Own workspace' },
-  { value: 'off', label: 'Leave to Hyprland' },
 ];
 
 async function renderPlayWindowSetting(cfg) {
@@ -1603,12 +1603,12 @@ async function renderPlayWindowSetting(cfg) {
   const desk = await window.r2sd.getDesktop();
   $('cfg-playworkspace-row').hidden = !desk.hyprland;
   if (desk.hyprland) {
-    setDropdownValue('cfg-playworkspace', cfg.playWorkspace || 'fullscreen');
+    setDropdownValue('cfg-playworkspace', cfg.playWorkspace || 'off');
     $('cfg-playworkspace-hint').textContent = {
       fullscreen: 'The game opens on a fresh workspace and goes fullscreen; R2SD gets focus back when it exits',
       workspace: 'The game opens on a fresh workspace; window size is left alone',
-      off: 'No workspace or fullscreen changes',
-    }[cfg.playWorkspace || 'fullscreen'];
+      off: 'Your compositor places the game window (use this if you have tiling off)',
+    }[cfg.playWorkspace || 'off'];
     $('cfg-playwindow-row').hidden = cfg.playWorkspace !== 'off'; // minimize is meaningless on Hyprland when the game gets its own workspace
   } else {
     $('cfg-playwindow-row').hidden = false;
@@ -1876,7 +1876,7 @@ setDropdownOptions('cfg-cloud', CLOUD_OPTIONS, 'off');
 initDropdown('cfg-updates', async (value) => { renderUpdateSetting(await window.r2sd.setConfig({ updateCheck: value })); });
 initDropdown('cfg-playwindow', async (value) => { renderPlayWindowSetting(await window.r2sd.setConfig({ playWindow: value })); });
 initDropdown('cfg-playworkspace', async (value) => { renderPlayWindowSetting(await window.r2sd.setConfig({ playWorkspace: value })); });
-setDropdownOptions('cfg-playworkspace', PLAY_WORKSPACE_OPTIONS, 'fullscreen');
+setDropdownOptions('cfg-playworkspace', PLAY_WORKSPACE_OPTIONS, 'off');
 setDropdownOptions('cfg-playwindow', PLAY_WINDOW_OPTIONS, 'minimize');
 setDropdownOptions('cfg-updates', UPDATE_OPTIONS, 'auto');
 $('btn-check-updates').addEventListener('click', async () => {

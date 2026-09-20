@@ -44,7 +44,9 @@ interface StoredConfig {
   updateCheckedAt: number;     // last check (ms epoch), so startup checks are at most daily
   updateSkip: string;          // a version the user chose not to be told about again
   playWindow: 'minimize' | 'stay'; // minimize R2SD while a game launched from Play runs
-  playWorkspace: 'fullscreen' | 'workspace' | 'off'; // Hyprland: put the game on its own workspace (+ fullscreen)
+  // Hyprland: put the game on its own workspace (+ fullscreen). Off by default —
+  // it fights a desktop where the user has already arranged their own windowing.
+  playWorkspace: 'fullscreen' | 'workspace' | 'off';
 }
 
 export interface PublicConfig {
@@ -79,7 +81,7 @@ const DEFAULTS: StoredConfig = {
   pinnedPlatforms: [], platforms: {}, basePath: '', stagingPath: '', uiScale: 'auto', faugus: 'auto',
   installedOnly: false, faugusPrefix: 'per-game',
   cloudSaves: 'off', saveExcludes: DEFAULT_CONFIG_EXCLUDES, rommDeviceId: '',
-  updateCheck: 'auto', updateCheckedAt: 0, updateSkip: '', playWindow: 'minimize', playWorkspace: 'fullscreen',
+  updateCheck: 'auto', updateCheckedAt: 0, updateSkip: '', playWindow: 'minimize', playWorkspace: 'off',
 };
 
 // Overridable so modules that read config can run under plain Node in tests.
@@ -197,7 +199,7 @@ export function getPublicConfig(): PublicConfig {
     updateCheckedAt: typeof stored.updateCheckedAt === 'number' ? stored.updateCheckedAt : 0,
     updateSkip: typeof stored.updateSkip === 'string' ? stored.updateSkip : '',
     playWindow: stored.playWindow === 'stay' ? 'stay' : 'minimize',
-    playWorkspace: stored.playWorkspace === 'off' ? 'off' : stored.playWorkspace === 'workspace' ? 'workspace' : 'fullscreen',
+    playWorkspace: stored.playWorkspace === 'fullscreen' ? 'fullscreen' : stored.playWorkspace === 'workspace' ? 'workspace' : 'off',
   };
 }
 
@@ -237,7 +239,7 @@ export function setConfig(update: {
   if (update.updateCheckedAt !== undefined) stored.updateCheckedAt = Number(update.updateCheckedAt) || 0;
   if (update.updateSkip !== undefined) stored.updateSkip = String(update.updateSkip);
   if (update.playWindow !== undefined) stored.playWindow = update.playWindow === 'stay' ? 'stay' : 'minimize';
-  if (update.playWorkspace !== undefined) stored.playWorkspace = update.playWorkspace === 'off' ? 'off' : update.playWorkspace === 'workspace' ? 'workspace' : 'fullscreen';
+  if (update.playWorkspace !== undefined) stored.playWorkspace = update.playWorkspace === 'fullscreen' ? 'fullscreen' : update.playWorkspace === 'workspace' ? 'workspace' : 'off';
   if (update.pinnedPlatforms !== undefined) {
     stored.pinnedPlatforms = (Array.isArray(update.pinnedPlatforms) ? update.pinnedPlatforms : [])
       .filter((id) => Number.isInteger(id));
