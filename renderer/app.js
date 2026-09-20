@@ -271,6 +271,9 @@ function renderPlatforms() {
     btn.append(pin, name, count);
     list.appendChild(btn);
   }
+  // The list is rebuilt from scratch, so a controller ring living on one of the
+  // old buttons went with it — put it back on the same position.
+  if (gp.active && gp.zone === 'sidebar') gpRefocus();
 }
 
 async function togglePin(platformId) {
@@ -679,8 +682,9 @@ function renderGrid() {
   for (const romId of state.progress.keys()) updateCardProgress(romId);
   for (const q of state.queue) updateCardProgress(q.romId);
 
-  // Re-apply the gamepad focus ring after a re-render
-  if (gp.active && gp.index >= 0) gpSetFocus(gp.index);
+  // Re-apply the gamepad focus ring after a re-render (grid only — the other
+  // zones keep a reference to their element, which survives a grid re-render)
+  if (gp.active && gp.zone === 'grid' && gp.index >= 0) gpSetFocus(gp.index);
 }
 
 /** Cold-load fast path: pages arrive from the server already sorted by name,
@@ -1723,8 +1727,16 @@ async function saveSettings() {
 // backgroundThrottling off, a rAF loop kept the renderer busy every frame for
 // as long as a controller was connected (always, on the Deck). 20 Hz is
 // indistinguishable for menu navigation.
+//
+// The controller can reach everything the mouse can. Focus lives in one of a
+// few "zones", and what the d-pad does depends on which one holds it:
+//
+//   sidebar  ←→  grid  (up from the top row) ↑ toolbar
+//   a modal or an open dropdown takes over entirely while it is up
+//
+// A activates, B backs out (menu → modal → nothing), LB/RB jump platforms.
 const GP_POLL_MS = 50;
-const gp = { index: -1, timer: null, prev: {}, lastMove: 0, active: false };
+const gp = { zone: 'grid', index: -1, ctl: null, timer: null, prev: {}, lastMove: 0, active: false };
 
 function gpCards() {
   return [...document.querySelectorAll('#game-grid .game-card')];
@@ -1735,30 +1747,149 @@ function gpColumns() {
   return Math.max(1, cols);
 }
 
+const gpVisible = (el) => !!el && !el.disabled && el.getClientRects().length > 0;
+
+function gpSidebarItems() {
+  return [...document.querySelectorAll('#platform-list .platform-item')].filter(gpVisible);
+}
+
+/** Search box, genre/sort dropdowns (their trigger button) and the icon buttons. */
+function gpToolbarItems() {
+  const out = [];
+  for (const el of document.querySelectorAll('#toolbar .toolbar-controls > *')) {
+    const target = el.classList.contains('dropdown') ? el.querySelector('.dropdown-trigger') : el;
+    if (gpVisible(target)) out.push(target);
+  }
+  return out;
+}
+
+/** The items of an open dropdown menu, if any — they outrank everything else. */
+function gpOpenMenuItems() {
+  const open = document.querySelector('.dropdown.open .dropdown-menu:not([hidden])');
+  return open ? [...open.querySelectorAll('.dropdown-item')].filter(gpVisible) : [];
+}
+
+function gpOpenModalCard() {
+  const modal = [...document.querySelectorAll('.modal')].find((m) => !m.hidden);
+  return modal ? modal.querySelector('.modal-card') : null;
+}
+
+/** Everything clickable/typable in the open modal, in reading order. */
+function gpModalControls() {
+  const card = gpOpenModalCard();
+  if (!card) return [];
+  return [...card.querySelectorAll('button, input, select, textarea')].filter(gpVisible);
+}
+
+/** What the d-pad is driving right now: the zone plus its elements. */
+function gpTargets() {
+  const menu = gpOpenMenuItems();
+  if (menu.length) return { zone: 'menu', items: menu };
+  if (gpOpenModalCard()) return { zone: 'modal', items: gpModalControls() };
+  if (gp.zone === 'sidebar') return { zone: 'sidebar', items: gpSidebarItems() };
+  if (gp.zone === 'toolbar') return { zone: 'toolbar', items: gpToolbarItems() };
+  return { zone: 'grid', items: gpCards() };
+}
+
+function gpClearFocus() {
+  for (const el of document.querySelectorAll('.gp-focus, .gp-focus-ctl')) el.classList.remove('gp-focus', 'gp-focus-ctl');
+}
+
+/** Highlight items[i] and remember it, so a re-render can find it again. */
+function gpFocus(zone, items, i) {
+  gpClearFocus();
+  if (!items.length) { gp.index = -1; gp.ctl = null; return; }
+  gp.index = Math.max(0, Math.min(i, items.length - 1));
+  const el = items[gp.index];
+  gp.ctl = zone === 'grid' ? null : el;
+  el.classList.add(zone === 'grid' ? 'gp-focus' : 'gp-focus-ctl');
+  el.scrollIntoView({ block: 'nearest' });
+}
+
+/** Re-apply the ring after a zone's elements were rebuilt (same position). */
+function gpRefocus() {
+  if (gp.index < 0) return;
+  const { zone, items } = gpTargets();
+  if (items.length) gpFocus(zone, items, gp.index);
+}
+
+/** Grid-only helper kept for the re-render hook. */
 function gpSetFocus(i) {
-  const cards = gpCards();
-  if (!cards.length) { gp.index = -1; return; }
-  gp.index = Math.max(0, Math.min(i, cards.length - 1));
-  cards.forEach((c, j) => c.classList.toggle('gp-focus', j === gp.index));
-  cards[gp.index].scrollIntoView({ block: 'nearest' });
+  gp.zone = 'grid';
+  gpFocus('grid', gpCards(), i);
+}
+
+/** Follow the remembered element across re-renders / async modal content. */
+function gpSyncIndex(zone, items) {
+  if (zone !== 'grid' && gp.ctl) {
+    const at = items.indexOf(gp.ctl);
+    if (at >= 0) return at;
+  }
+  return gp.index;
+}
+
+function gpEnterZone(zone, i = 0) {
+  gp.zone = zone;
+  const { items } = gpTargets();
+  gpFocus(zone, items, i);
+}
+
+/** A modal just opened: start on its primary action, not on the close button. */
+function gpEnterModal() {
+  const items = gpModalControls();
+  if (!items.length) return;
+  const primary = items.findIndex((el) => el.classList.contains('primary'));
+  gpFocus('modal', items, primary >= 0 ? primary : 0);
 }
 
 function gpMove(dir) {
-  const cards = gpCards();
-  if (!cards.length) return;
-  if (gp.index < 0) { gpSetFocus(0); return; }
-  const cols = gpColumns();
-  let i = gp.index;
-  if (dir === 'left') i -= 1;
-  else if (dir === 'right') i += 1;
-  else if (dir === 'up') i -= cols;
-  else if (dir === 'down') i += cols;
-  if (i >= 0 && i < cards.length) gpSetFocus(i);
+  const { zone, items } = gpTargets();
+  if (!items.length) return;
+  const i = gpSyncIndex(zone, items);
+  if (i < 0) { gpFocus(zone, items, 0); return; }
+
+  if (zone === 'grid') {
+    const cols = gpColumns();
+    if (dir === 'left' && i % cols === 0) { gpEnterZone('sidebar', 0); return; }
+    if (dir === 'up' && i < cols) { gpEnterZone('toolbar', 0); return; }
+    const next = dir === 'left' ? i - 1 : dir === 'right' ? i + 1 : dir === 'up' ? i - cols : i + cols;
+    if (next >= 0 && next < items.length) gpFocus(zone, items, next);
+    return;
+  }
+  if (zone === 'sidebar') {
+    if (dir === 'right') { gpEnterZone('grid', Math.max(0, gp.gridIndex || 0)); return; }
+    if (dir === 'up' || dir === 'down') gpFocus(zone, items, i + (dir === 'down' ? 1 : -1));
+    return;
+  }
+  if (zone === 'toolbar') {
+    if (dir === 'down') { gpEnterZone('grid', Math.max(0, gp.gridIndex || 0)); return; }
+    if (dir === 'left' || dir === 'right') gpFocus(zone, items, i + (dir === 'right' ? 1 : -1));
+    return;
+  }
+  // menu / modal: one linear list, either axis walks it
+  const step = dir === 'down' || dir === 'right' ? 1 : -1;
+  gpFocus(zone, items, i + step);
 }
 
 function gpActivate() {
-  const cards = gpCards();
-  if (gp.index >= 0 && cards[gp.index]) cards[gp.index].click();
+  const { zone, items } = gpTargets();
+  const i = gpSyncIndex(zone, items);
+  const el = items[i];
+  if (!el) return;
+  if (zone === 'grid') { gp.gridIndex = i; el.click(); setTimeout(gpEnterModal, 60); return; }
+  // A text box wants the keyboard, not a click (the Deck's on-screen keyboard follows focus)
+  if (el.tagName === 'INPUT' && /text|search|password|number/.test(el.type)) { el.focus(); return; }
+  if (el.tagName === 'TEXTAREA') { el.focus(); return; }
+  const wasModal = zone === 'modal' ? gpOpenModalCard() : null;
+  el.click();
+  // Clicking may have opened a menu, swapped the modal, or closed it
+  setTimeout(() => {
+    const card = gpOpenModalCard();
+    if (zone === 'modal' && card && card !== wasModal) { gpEnterModal(); return; }
+    if (zone === 'modal' && !card) { gpEnterZone('grid', gp.gridIndex || 0); return; }
+    const t = gpTargets();
+    gpFocus(t.zone, t.items, t.zone === zone ? gp.index : 0);
+  }, 60);
 }
 
 function anyModalOpen() {
@@ -1766,12 +1897,24 @@ function anyModalOpen() {
 }
 
 function gpBack() {
+  if (gpOpenMenuItems().length) { closeAllDropdowns(); gpEnterZone(gp.zone, gp.index); return; }
+  if (!anyModalOpen()) return;
   closeExePicker();
   closeSyncsModal();
   closeFoldersModal();
   closeDetail();
   closeSettings();
   closePlatformsModal();
+  gpEnterZone('grid', gp.gridIndex || 0);
+}
+
+/** LB / RB: straight to the previous or next platform, from anywhere. */
+function gpPlatformStep(delta) {
+  const items = gpSidebarItems();
+  if (!items.length) return;
+  const at = items.findIndex((el) => el.classList.contains('active'));
+  const next = items[Math.max(0, Math.min((at < 0 ? 0 : at) + delta, items.length - 1))];
+  if (next && next !== items[at]) next.click();
 }
 
 // A game launched from Play gets the controller; R2SD must not. Set/cleared by
@@ -1792,40 +1935,36 @@ function gpPoll() {
   if (!gpMayRead()) { gp.prev = { a: true, b: true }; return; } // held buttons don't fire on return either
   const pads = navigator.getGamepads ? navigator.getGamepads() : [];
   const pad = [...pads].find((p) => p);
-  if (pad) {
-    const now = performance.now();
-    const axH = pad.axes[0] || 0;
-    const axV = pad.axes[1] || 0;
-    const btn = (n) => pad.buttons[n] && pad.buttons[n].pressed;
-    const up = btn(12) || axV < -0.5;
-    const down = btn(13) || axV > 0.5;
-    const left = btn(14) || axH < -0.5;
-    const right = btn(15) || axH > 0.5;
-    const a = btn(0);
-    const b = btn(1);
+  if (!pad) return;
+  const now = performance.now();
+  const axH = pad.axes[0] || 0;
+  const axV = pad.axes[1] || 0;
+  const btn = (n) => pad.buttons[n] && pad.buttons[n].pressed;
+  const up = btn(12) || axV < -0.5;
+  const down = btn(13) || axV > 0.5;
+  const left = btn(14) || axH < -0.5;
+  const right = btn(15) || axH > 0.5;
+  const a = btn(0);
+  const b = btn(1);
+  const lb = btn(4);
+  const rb = btn(5);
 
-    if (!anyModalOpen() && now - gp.lastMove > 160) {
-      let moved = true;
-      if (up) gpMove('up');
-      else if (down) gpMove('down');
-      else if (left) gpMove('left');
-      else if (right) gpMove('right');
-      else moved = false;
-      if (moved) gp.lastMove = now;
-    }
-
-    // Edge-triggered A/B
-    if (a && !gp.prev.a) {
-      if (anyModalOpen()) {
-        const dl = $('btn-dl');
-        if (!$('detail-modal').hidden && dl && !dl.hidden) dl.click();
-      } else {
-        gpActivate();
-      }
-    }
-    if (b && !gp.prev.b && anyModalOpen()) gpBack();
-    gp.prev = { a, b };
+  if (now - gp.lastMove > 160) {
+    let moved = true;
+    if (up) gpMove('up');
+    else if (down) gpMove('down');
+    else if (left) gpMove('left');
+    else if (right) gpMove('right');
+    else moved = false;
+    if (moved) gp.lastMove = now;
   }
+
+  // Edge-triggered buttons
+  if (a && !gp.prev.a) gpActivate();
+  if (b && !gp.prev.b) gpBack();
+  if (lb && !gp.prev.lb && !anyModalOpen()) gpPlatformStep(-1);
+  if (rb && !gp.prev.rb && !anyModalOpen()) gpPlatformStep(1);
+  gp.prev = { a, b, lb, rb };
 }
 
 function gpStart() {

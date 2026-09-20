@@ -232,6 +232,15 @@ input[type="search"] { width: 220px; }
   transform: translateY(-3px);
 }
 
+/* Controller focus on anything that isn't a game card: sidebar platforms,
+   toolbar controls, modal buttons, dropdown items. */
+.gp-focus-ctl {
+  outline: 3px solid var(--accent);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+.dropdown-item.gp-focus-ctl, .platform-item.gp-focus-ctl { outline-offset: -2px; }
+
 /* Aspect ratio lives on a plain div: replaced elements (img) without a
    loaded src don't propagate their aspect-ratio height into grid row
    sizing, which collapsed rows to their borders. Divs size reliably. */

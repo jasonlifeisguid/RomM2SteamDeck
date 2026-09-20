@@ -81,13 +81,22 @@ Any configured folder is protected: the app will refuse to delete it even if a g
 
 ### Controller navigation
 
-Works with any gamepad, including the Deck's built-in controls: **D-pad / left stick** moves between games, **A** opens a game (or downloads it from the detail view), **B** closes dialogs. **Escape** closes dialogs on a keyboard.
+Works with any gamepad, including the Deck's built-in controls. Everything the mouse can reach, the controller can reach:
+
+| | |
+|---|---|
+| **D-pad / left stick** | Move. In the grid, **left** from the first column goes to the platform list and **up** from the top row goes to the toolbar; **right** / **down** come back. |
+| **A** | Open the focused game, press the focused button, pick the focused menu item. In a dialog the ring starts on the main action (**▶ Play** on a game), so it's A, A to launch. Text boxes take focus instead, for the Deck's on-screen keyboard. |
+| **B** | Back out: closes an open dropdown, then the dialog, returning the ring to the game you came from. |
+| **LB / RB** | Previous / next platform, without visiting the sidebar. |
+
+Dialogs, dropdown menus and the settings screen are all navigable the same way. **Escape** still closes dialogs on a keyboard.
 
 ---
 
 ## Playing Windows games
 
-Windows games (RomM's *Windows* platform, or any platform you've set to **Extract**) get a **▶ Play** button once they're installed. The first press asks you to pick the game's executable; that becomes the default and later presses launch straight away. The **Add to Steam / Shortcut…** dialog is where you change the default (**★ Set Default**).
+Windows games (RomM's *Windows* platform, or any platform you've set to **Extract**) get a **▶ Play** button once they're installed. The first press asks you to pick the game's executable; that becomes the default and later presses launch straight away. You can change it later — see *Changing which executable Play runs* below.
 
 - **On Windows**, Play runs the executable directly.
 - **On Linux / Steam Deck**, a Windows `.exe` needs Proton. You have two routes:
