@@ -28,7 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { RommClient } from './romm';
 import * as config from './config';
-import { safeJoin, sanitizeForMatch, sanitizeFolderName } from './fsutil';
+import { isInsideFolder, safeJoin, sanitizeForMatch, sanitizeFolderName } from './fsutil';
 
 const unzipper = require('unzipper');
 // In a packaged app the 7za binary is unpacked from the asar archive (see
@@ -653,6 +653,16 @@ export function deleteDownload(romId: number): { deleted: string[]; error?: stri
  * All changes are applied to one in-memory list and written once at the end
  * (each adopt/drop used to re-read and rewrite downloads.json).
  */
+/** Rebase a path that lived under `fromRoot` onto `toRoot`, or '' if it doesn't
+ *  fit there any more (different layout, file gone). */
+function remapPath(file: string | undefined, fromRoot: string, toRoot: string): string {
+  if (!file) return '';
+  if (fs.existsSync(file)) return file;                       // still valid as-is
+  if (!fromRoot || !isInsideFolder(fromRoot, file)) return '';
+  const moved = path.join(toRoot, path.relative(fromRoot, file));
+  return fs.existsSync(moved) ? moved : '';
+}
+
 export function syncPlatform(
   platformId: number,
   roms: { id: number; name: string; fsName: string }[]
@@ -662,9 +672,20 @@ export function syncPlatform(
   let added = 0;
   let removed = 0;
 
-  // Drop stale records
+  // Drop records whose game is no longer on disk — but keep what the user chose
+  // for them (executable, cloud sync point, save locations) in case the same
+  // game is adopted again below, e.g. after the install path moved.
+  const orphans = new Map<number, DownloadRecord>();
   const before = records.length;
-  records = records.filter((r) => !(r.platformId === platformId && r.filePath && !fs.existsSync(r.filePath)));
+  records = records.filter((r) => {
+    if (r.platformId !== platformId || !r.filePath) return true;
+    // A path we can't even look at — an unmounted drive, a sleeping NAS, a
+    // share that isn't up yet — is not evidence that the game is gone.
+    if (!fs.existsSync(path.dirname(r.filePath))) return true;
+    if (fs.existsSync(r.filePath)) return true;
+    orphans.set(r.romId, r);
+    return false;
+  });
   removed = before - records.length;
   const recordedIds = new Set(records.filter((r) => r.platformId === platformId).map((r) => r.romId));
 
@@ -679,7 +700,20 @@ export function syncPlatform(
   }
 
   const adopt = (rom: { id: number; name: string }, fileName: string, filePath: string, size: number) => {
-    records.push({ romId: rom.id, romName: rom.name, fileName, filePath, platformId, size, downloadedAt: Date.now() });
+    const prev = orphans.get(rom.id);
+    const record: DownloadRecord = {
+      romId: rom.id, romName: rom.name, fileName, filePath, platformId, size,
+      downloadedAt: prev?.downloadedAt ?? Date.now(),
+    };
+    if (prev) {
+      // Carry the user's choices over to the game's new home
+      const exe = remapPath(prev.defaultExe, prev.filePath, filePath);
+      if (exe) record.defaultExe = exe;
+      if (prev.cloud) record.cloud = prev.cloud;
+      if (prev.savePaths?.length) { record.savePaths = prev.savePaths; record.savePathsNote = prev.savePathsNote; }
+      if (prev.syncConfigFiles !== undefined) record.syncConfigFiles = prev.syncConfigFiles;
+    }
+    records.push(record);
     recordedIds.add(rom.id);
     added++;
   };

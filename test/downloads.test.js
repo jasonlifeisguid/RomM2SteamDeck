@@ -256,3 +256,102 @@ test('fs error inside the parser entry handler does not hang or crash (PR #5 cas
   assert.equal(fs.existsSync(path.join(t.install, '.r2sd-extract-17')), false, 'staging dir cleaned up');
 });
 
+
+// ── syncPlatform: adopting from disk must not throw away user choices ──────
+// The sync runs on every platform open. It used to drop any record whose
+// folder it couldn't see and re-adopt a bare one, so a game's chosen
+// executable (and cloud sync point, and save locations) vanished on restart.
+
+function plantRecord(t, extra = {}) {
+  const { install, userData } = t;
+  const folder = path.join(install, 'Stellar Blade');
+  fs.mkdirSync(folder, { recursive: true });
+  fs.writeFileSync(path.join(folder, 'Game.exe'), 'MZ');
+  const record = {
+    romId: 77, romName: 'Stellar Blade', fileName: 'Stellar Blade', filePath: folder,
+    platformId: PLATFORM_ID, size: 0, downloadedAt: 111,
+    defaultExe: path.join(folder, 'Game.exe'),
+    cloud: { saveId: 5, contentHash: 'abc', fingerprint: 'def', syncedAt: 222 },
+    savePaths: ['AppData/Local/SB'], savePathsNote: 'learned from a restore',
+    syncConfigFiles: true,
+    ...extra,
+  };
+  fs.writeFileSync(path.join(userData, 'downloads.json'), JSON.stringify([record], null, 2));
+  return { folder, record };
+}
+const ROMS = [{ id: 77, name: 'Stellar Blade', fsName: 'Stellar Blade.zip' }];
+
+test('sync leaves a healthy record alone', () => {
+  const t = makeTemp();
+  plantRecord(t);
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 0 });
+  assert.ok(downloads.findDownload(77).defaultExe);
+});
+
+/** Point the platform at a second install path as well (a moved library). */
+function addInstallPath(t, name) {
+  const extra = path.join(t.root, name);
+  fs.mkdirSync(extra, { recursive: true });
+  const cfg = JSON.parse(fs.readFileSync(path.join(t.userData, 'config.json'), 'utf8'));
+  cfg.platforms[PLATFORM_ID].installPaths = [t.install, extra];
+  fs.writeFileSync(path.join(t.userData, 'config.json'), JSON.stringify(cfg));
+  config.setUserDataDirForTests(t.userData); // drop the memoized config
+  return extra;
+}
+
+test('a game whose folder moved keeps its executable, cloud sync point and save locations', () => {
+  const t = makeTemp();
+  const { folder } = plantRecord(t);
+  // The library moved to another drive: same folder, different install path
+  const moved = path.join(addInstallPath(t, 'install2'), 'Stellar Blade');
+  fs.renameSync(folder, moved);
+
+  const changes = downloads.syncPlatform(PLATFORM_ID, ROMS);
+  assert.deepEqual(changes, { added: 1, removed: 1 }, 'record is re-adopted at the new path');
+  const rec = downloads.findDownload(77);
+  assert.equal(rec.filePath, moved);
+  assert.equal(rec.defaultExe, path.join(moved, 'Game.exe'), 'the chosen exe follows the game');
+  assert.deepEqual(rec.cloud, { saveId: 5, contentHash: 'abc', fingerprint: 'def', syncedAt: 222 });
+  assert.deepEqual(rec.savePaths, ['AppData/Local/SB']);
+  assert.equal(rec.savePathsNote, 'learned from a restore');
+  assert.equal(rec.syncConfigFiles, true);
+  assert.equal(rec.downloadedAt, 111, 'still the date it was first installed');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(t.userData, 'downloads.json'), 'utf8')).length, 1);
+});
+
+test('a drive that is not mounted is not treated as a deleted game', () => {
+  const t = makeTemp();
+  // Same shape as a NAS share or external drive that is not up yet: the
+  // record's whole parent directory is unreachable.
+  plantRecord(t, { filePath: path.join(t.root, 'not-mounted', 'Stellar Blade') });
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 0 });
+  const rec = downloads.findDownload(77);
+  assert.ok(rec, 'record survived');
+  assert.ok(rec.defaultExe, 'and so did the chosen exe');
+});
+
+test('a genuinely deleted game is still forgotten', () => {
+  const t = makeTemp();
+  const { folder } = plantRecord(t);
+  fs.rmSync(folder, { recursive: true, force: true });   // install path still there, game gone
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 1 });
+  assert.equal(downloads.findDownload(77), undefined);
+});
+
+test('an exe chosen outside the game folder is dropped rather than remapped wrongly', () => {
+  const t = makeTemp();
+  const outside = path.join(t.root, 'elsewhere.exe');
+  fs.writeFileSync(outside, 'MZ');
+  const { folder } = plantRecord(t, { defaultExe: outside });
+  fs.renameSync(folder, path.join(addInstallPath(t, 'install2'), 'Stellar Blade'));
+  downloads.syncPlatform(PLATFORM_ID, ROMS);
+  // It still exists on disk, so it stays as-is
+  assert.equal(downloads.findDownload(77).defaultExe, outside);
+
+  // …but one that is simply gone doesn't come back as a broken path
+  const t2 = makeTemp();
+  const { folder: f2 } = plantRecord(t2, { defaultExe: path.join(t2.root, 'vanished.exe') });
+  fs.renameSync(f2, path.join(addInstallPath(t2, 'install2'), 'Stellar Blade'));
+  downloads.syncPlatform(PLATFORM_ID, ROMS);
+  assert.equal(downloads.findDownload(77).defaultExe, undefined);
+});
