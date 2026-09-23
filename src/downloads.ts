@@ -666,28 +666,12 @@ function remapPath(file: string | undefined, fromRoot: string, toRoot: string): 
 export function syncPlatform(
   platformId: number,
   roms: { id: number; name: string; fsName: string }[]
-): { added: number; removed: number } {
+): { added: number; removed: number; moved: number } {
   const setup = platformSetup(platformId);
   let records = loadRecords();
   let added = 0;
   let removed = 0;
-
-  // Drop records whose game is no longer on disk — but keep what the user chose
-  // for them (executable, cloud sync point, save locations) in case the same
-  // game is adopted again below, e.g. after the install path moved.
-  const orphans = new Map<number, DownloadRecord>();
-  const before = records.length;
-  records = records.filter((r) => {
-    if (r.platformId !== platformId || !r.filePath) return true;
-    // A path we can't even look at — an unmounted drive, a sleeping NAS, a
-    // share that isn't up yet — is not evidence that the game is gone.
-    if (!fs.existsSync(path.dirname(r.filePath))) return true;
-    if (fs.existsSync(r.filePath)) return true;
-    orphans.set(r.romId, r);
-    return false;
-  });
-  removed = before - records.length;
-  const recordedIds = new Set(records.filter((r) => r.platformId === platformId).map((r) => r.romId));
+  let moved = 0;
 
   const byFsName = new Map<string, { id: number; name: string; fsName: string }>();
   const byCleanName = new Map<string, { id: number; name: string; fsName: string }>();
@@ -699,37 +683,18 @@ export function syncPlatform(
     if (rom.name) byCleanName.set(sanitizeForMatch(rom.name), rom);
   }
 
-  const adopt = (rom: { id: number; name: string }, fileName: string, filePath: string, size: number) => {
-    const prev = orphans.get(rom.id);
-    const record: DownloadRecord = {
-      romId: rom.id, romName: rom.name, fileName, filePath, platformId, size,
-      downloadedAt: prev?.downloadedAt ?? Date.now(),
-    };
-    if (prev) {
-      // Carry the user's choices over to the game's new home
-      const exe = remapPath(prev.defaultExe, prev.filePath, filePath);
-      if (exe) record.defaultExe = exe;
-      if (prev.cloud) record.cloud = prev.cloud;
-      if (prev.savePaths?.length) { record.savePaths = prev.savePaths; record.savePathsNote = prev.savePathsNote; }
-      if (prev.syncConfigFiles !== undefined) record.syncConfigFiles = prev.syncConfigFiles;
-    }
-    records.push(record);
-    recordedIds.add(rom.id);
-    added++;
-  };
-
-  // Adopt loose files in the platform folder
+  // 1. What is on disk right now, by rom
+  interface Found { rom: { id: number; name: string }; fileName: string; filePath: string; size: number; }
+  const found = new Map<number, Found>();
   if (setup.folder && fs.existsSync(setup.folder)) {
     for (const item of fs.readdirSync(setup.folder)) {
       const rom = byFsName.get(item.toLowerCase());
-      if (rom && !recordedIds.has(rom.id)) {
+      if (rom && !found.has(rom.id)) {
         const full = path.join(setup.folder, item);
-        adopt(rom, item, full, fs.statSync(full).size);
+        found.set(rom.id, { rom, fileName: item, filePath: full, size: fs.statSync(full).size });
       }
     }
   }
-
-  // Adopt extracted game folders in install paths
   for (const installPath of setup.installPaths) {
     if (!installPath || !fs.existsSync(installPath)) continue;
     for (const item of fs.readdirSync(installPath)) {
@@ -737,10 +702,41 @@ export function syncPlatform(
       const full = path.join(installPath, item);
       if (!fs.statSync(full).isDirectory()) continue;
       const rom = byCleanName.get(sanitizeForMatch(item));
-      if (rom && !recordedIds.has(rom.id)) adopt(rom, item, full, 0);
+      if (rom && !found.has(rom.id)) found.set(rom.id, { rom, fileName: item, filePath: full, size: 0 });
     }
   }
 
-  if (added || removed) saveRecords(records);
-  return { added, removed };
+  // 2. Reconcile what we already track. A record is the user's: it holds the
+  //    chosen executable, the cloud sync point, the learned save locations.
+  //    Never replace it — move it, keep it, or (only for a real deletion) drop it.
+  records = records.filter((r) => {
+    if (r.platformId !== platformId || !r.filePath || fs.existsSync(r.filePath)) return true;
+    const now = found.get(r.romId);
+    if (now) {
+      // The game is somewhere else now (library moved, drive remounted elsewhere)
+      const exe = remapPath(r.defaultExe, r.filePath, now.filePath);
+      r.filePath = now.filePath;
+      r.fileName = now.fileName;
+      if (now.size) r.size = now.size;
+      if (exe) r.defaultExe = exe; else delete r.defaultExe;
+      moved++;
+      return true;
+    }
+    // Can't look where it was — an unmounted drive, a share or NAS that isn't
+    // up yet. That is not evidence the game is gone; keep it for next time.
+    if (!fs.existsSync(path.dirname(r.filePath))) return true;
+    removed++;
+    return false;
+  });
+
+  // 3. Games on disk we don't track yet
+  const recordedIds = new Set(records.filter((r) => r.platformId === platformId).map((r) => r.romId));
+  for (const f of found.values()) {
+    if (recordedIds.has(f.rom.id)) continue;
+    records.push({ romId: f.rom.id, romName: f.rom.name, fileName: f.fileName, filePath: f.filePath, platformId, size: f.size, downloadedAt: Date.now() });
+    added++;
+  }
+
+  if (added || removed || moved) saveRecords(records);
+  return { added, removed, moved };
 }

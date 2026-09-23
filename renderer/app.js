@@ -728,8 +728,12 @@ async function selectPlatform(platformId, refresh = false) {
     updateGenreFilter();
     renderGrid();
     if (state.installedOnly) renderPlatforms(); // counts may have changed after the sync
-    if (changes.added || changes.removed) {
-      toast(`Library sync: ${changes.added} adopted, ${changes.removed} removed`);
+    if (changes.added || changes.removed || changes.moved) {
+      const parts = [];
+      if (changes.added) parts.push(`${changes.added} found`);
+      if (changes.moved) parts.push(`${changes.moved} moved (settings kept)`);
+      if (changes.removed) parts.push(`${changes.removed} removed`);
+      toast(`Library sync: ${parts.join(', ')}`);
     }
   } catch (err) {
     $('grid-status').textContent = `Failed to load games: ${err.message || err}`;

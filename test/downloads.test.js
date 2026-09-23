@@ -228,12 +228,12 @@ test('syncPlatform adopts folders, ignores staging dirs, and writes once', async
     { id: 31, name: 'Sonic Mania', fsName: 'sonic.zip' },
     { id: 32, name: 'Extract', fsName: 'r2sd-extract-99.zip' },
   ]);
-  assert.deepEqual(res, { added: 1, removed: 0 });
+  assert.deepEqual(res, { added: 1, removed: 0, moved: 0 });
   assert.equal(downloads.findDownload(31).filePath, path.join(t.install, 'Sonic Mania'));
   assert.equal(downloads.findDownload(32), undefined);
   // Stale record → removed on the next sync
   fs.rmSync(path.join(t.install, 'Sonic Mania'), { recursive: true });
-  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, []), { added: 0, removed: 1 });
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, []), { added: 0, removed: 1, moved: 0 });
   assert.equal(downloads.findDownload(31), undefined);
 });
 
@@ -284,7 +284,7 @@ const ROMS = [{ id: 77, name: 'Stellar Blade', fsName: 'Stellar Blade.zip' }];
 test('sync leaves a healthy record alone', () => {
   const t = makeTemp();
   plantRecord(t);
-  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 0 });
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 0, moved: 0 });
   assert.ok(downloads.findDownload(77).defaultExe);
 });
 
@@ -307,7 +307,7 @@ test('a game whose folder moved keeps its executable, cloud sync point and save 
   fs.renameSync(folder, moved);
 
   const changes = downloads.syncPlatform(PLATFORM_ID, ROMS);
-  assert.deepEqual(changes, { added: 1, removed: 1 }, 'record is re-adopted at the new path');
+  assert.deepEqual(changes, { added: 0, removed: 0, moved: 1 }, 'the same record follows the game');
   const rec = downloads.findDownload(77);
   assert.equal(rec.filePath, moved);
   assert.equal(rec.defaultExe, path.join(moved, 'Game.exe'), 'the chosen exe follows the game');
@@ -324,7 +324,10 @@ test('a drive that is not mounted is not treated as a deleted game', () => {
   // Same shape as a NAS share or external drive that is not up yet: the
   // record's whole parent directory is unreachable.
   plantRecord(t, { filePath: path.join(t.root, 'not-mounted', 'Stellar Blade') });
-  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 0 });
+  // …and the game isn't visible anywhere else either (plantRecord made a copy in
+  // the install path; take it away so this is purely "drive not up yet")
+  fs.rmSync(path.join(t.install, 'Stellar Blade'), { recursive: true, force: true });
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 0, moved: 0 });
   const rec = downloads.findDownload(77);
   assert.ok(rec, 'record survived');
   assert.ok(rec.defaultExe, 'and so did the chosen exe');
@@ -334,7 +337,7 @@ test('a genuinely deleted game is still forgotten', () => {
   const t = makeTemp();
   const { folder } = plantRecord(t);
   fs.rmSync(folder, { recursive: true, force: true });   // install path still there, game gone
-  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 1 });
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, ROMS), { added: 0, removed: 1, moved: 0 });
   assert.equal(downloads.findDownload(77), undefined);
 });
 
@@ -354,4 +357,35 @@ test('an exe chosen outside the game folder is dropped rather than remapped wron
   fs.renameSync(f2, path.join(addInstallPath(t2, 'install2'), 'Stellar Blade'));
   downloads.syncPlatform(PLATFORM_ID, ROMS);
   assert.equal(downloads.findDownload(77).defaultExe, undefined);
+});
+
+test('a drive remounted somewhere else: every game follows, choices intact (the /run/media -> /mnt case)', () => {
+  const t = makeTemp();
+  // Records written while the drive was auto-mounted at one path…
+  const oldMount = path.join(t.root, 'run-media', 'Games');
+  const games = ['Stellar Blade', 'Maneater', 'Starfield'];
+  const recs = games.map((name, i) => ({
+    romId: 100 + i, romName: name, fileName: name, filePath: path.join(oldMount, name),
+    platformId: PLATFORM_ID, size: 0, downloadedAt: 1000 + i,
+    defaultExe: path.join(oldMount, name, 'bin', `${name}.exe`),
+    cloud: { saveId: i, contentHash: 'h', fingerprint: 'f', syncedAt: 1 },
+  }));
+  fs.writeFileSync(path.join(t.userData, 'downloads.json'), JSON.stringify(recs, null, 2));
+  // …now the old mount point is gone and the same drive is at the install path
+  for (const name of games) {
+    fs.mkdirSync(path.join(t.install, name, 'bin'), { recursive: true });
+    fs.writeFileSync(path.join(t.install, name, 'bin', `${name}.exe`), 'MZ');
+  }
+  const roms = games.map((name, i) => ({ id: 100 + i, name, fsName: `${name}.zip` }));
+
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, roms), { added: 0, removed: 0, moved: 3 });
+  for (const [i, name] of games.entries()) {
+    const rec = downloads.findDownload(100 + i);
+    assert.equal(rec.filePath, path.join(t.install, name));
+    assert.equal(rec.defaultExe, path.join(t.install, name, 'bin', `${name}.exe`), `${name} kept its exe`);
+    assert.equal(rec.cloud.saveId, i);
+    assert.equal(rec.downloadedAt, 1000 + i);
+  }
+  // and it's stable from then on
+  assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, roms), { added: 0, removed: 0, moved: 0 });
 });
