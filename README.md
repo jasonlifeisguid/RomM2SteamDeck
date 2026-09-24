@@ -155,7 +155,7 @@ RomM2SteamDeck.AppImage --run-exe "/games/My Game/bin/Game.exe"
 
 ### Desktop shortcuts
 
-The same dialog can create a desktop shortcut for any executable (`.lnk` on Windows, `.desktop` on Linux, `.command` on macOS) if you'd rather launch from the desktop.
+The same dialog can create a shortcut for any executable: a `.lnk` on the Windows desktop, a `.command` on macOS. On Linux a Windows game can only run through Faugus, so its shortcut goes in your app menu as a Faugus launcher (the same format Faugus writes itself, with the game's own prefix); a native Linux program gets a `.desktop` file on the desktop.
 
 ---
 
@@ -190,7 +190,7 @@ The interface zooms to **140%** automatically on a Steam Deck — its 7" 1280×8
 ## Features at a glance
 
 - **Fast library browsing** — full library with pagination (no 500-game cap), stale-while-revalidate caching with delta sync, lazy-loaded cover art, search, genre filter, five sort orders, grid and list views, pinned platforms.
-- **Downloads** — serial queue with progress, cancel, resume after interruptions, and streaming extract-while-downloading for zips; bundled 7-Zip for `.7z`. Every extracted game gets exactly one folder under the install path.
+- **Downloads** — serial queue with progress, cancel, resume after interruptions, and streaming extract-while-downloading for zips; bundled 7-Zip 26.03 for `.7z` — the official binaries, one per platform (see [`vendor/7zip`](vendor/7zip/README.md) for provenance and hashes). Every extracted game gets exactly one folder under the install path.
 - **Multiple install paths** per platform, with a prompt to choose when more than one is configured.
 - **Play** — direct on Windows; through **Faugus Launcher** on Linux; or via **Add to Steam** with live name / cover art / Proton configuration when Decky is present.
 - **Saves & Folders…** — one click to a game's install folder or its Proton-side saves and configs; save backup, restore and RomM cloud sync per game.

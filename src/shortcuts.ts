@@ -13,6 +13,7 @@ import { spawn, spawnSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
+import * as cli from './cli';
 import * as faugus from './faugus';
 import { whenSpawned } from './fsutil';
 
@@ -69,6 +70,8 @@ export function listExes(gameFolder: string): ExeFile[] {
 export interface ShortcutResult {
   path?: string;
   error?: string;
+  /** Linux: written to the app menu (a Faugus launcher), not the desktop. */
+  appMenu?: boolean;
 }
 
 export interface LaunchResult {
@@ -235,9 +238,37 @@ function sanitizeName(name: string): string {
   return (name.replace(/[\\/*?:"<>|]/g, '').replace(/\s+/g, ' ').trim()) || 'Game';
 }
 
-/** Create a desktop shortcut to an exe. Type depends on the host OS. */
-export function createShortcut(exePath: string, gameName: string): ShortcutResult {
+/**
+ * Create a shortcut to a game. Windows: a .lnk on the desktop. Linux: a
+ * Windows .exe can only run through Faugus, so it gets an app-menu launcher in
+ * Faugus's own format (registering the game first when prefixes are per game);
+ * a native Linux program gets a .desktop file on the desktop. macOS: a
+ * .command script.
+ */
+export function createShortcut(exePath: string, gameName: string, opts: { faugusEnabled?: boolean; faugusPerGame?: boolean } = {}): ShortcutResult {
   if (!exePath || !fs.existsSync(exePath)) return { error: 'Executable not found' };
+
+  if (process.platform === 'linux' && exePath.toLowerCase().endsWith('.exe')) {
+    const install = opts.faugusEnabled === false ? null : faugus.findFaugus();
+    if (!install) {
+      return { error: opts.faugusEnabled === false
+        ? 'A Windows game needs Faugus Launcher to run — turn it on in Settings, or use Add to Steam.'
+        : 'A Windows game needs Faugus Launcher to run — install it, or use Add to Steam.' };
+    }
+    try {
+      let gameId = faugus.findRegisteredGameId(exePath);
+      if (!gameId && opts.faugusPerGame !== false) {
+        const reg = faugus.registerGame({ title: gameName, exePath });
+        if (!reg.ok) return { error: reg.error };
+        gameId = reg.gameId ?? null;
+      }
+      const file = cli.writeGameLauncher({ title: gameName, gameId, exePath }, install, faugus.realEnv(), cli.realDesktopEnv());
+      return { path: file, appMenu: true };
+    } catch (err) {
+      return { error: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   const desktop = path.join(os.homedir(), 'Desktop');
   fs.mkdirSync(desktop, { recursive: true });
   const safeName = sanitizeName(gameName);
@@ -269,9 +300,9 @@ export function createShortcut(exePath: string, gameName: string): ShortcutResul
       const content =
         '[Desktop Entry]\n' +
         'Type=Application\n' +
-        `Name=${gameName.replace(/\n/g, ' ')}\n` +
-        `Exec="${exePath}"\n` +
-        `Path=${path.dirname(exePath)}\n` +
+        `Name=${cli.desktopValue(gameName)}\n` +
+        `Exec=${cli.execArg(exePath)}\n` +
+        `Path=${cli.desktopValue(path.dirname(exePath))}\n` +
         'Icon=application-x-executable\n' +
         'Terminal=false\n';
       fs.writeFileSync(shortcutPath, content);
@@ -281,7 +312,8 @@ export function createShortcut(exePath: string, gameName: string): ShortcutResul
 
     if (process.platform === 'darwin') {
       const shortcutPath = path.join(desktop, `${safeName}.command`);
-      fs.writeFileSync(shortcutPath, `#!/bin/bash\nopen "${exePath}"\n`);
+      // Single-quoted for the shell: a path with $(…) or backticks stays text
+      fs.writeFileSync(shortcutPath, `#!/bin/bash\nopen '${exePath.replace(/'/g, `'\\''`)}'\n`);
       fs.chmodSync(shortcutPath, 0o755);
       return { path: shortcutPath };
     }

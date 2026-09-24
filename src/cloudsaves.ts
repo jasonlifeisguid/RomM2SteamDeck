@@ -143,7 +143,7 @@ export async function download(deps: CloudDeps, romId: number, target: saves.Sav
     const content = await deps.client.downloadSave(rem.save.id, deps.deviceId || undefined);
     const file = path.join(tmp, 'cloud.zip');
     fs.writeFileSync(file, content);
-    const r = await saves.restoreSaves(target, file, opts);
+    const r = await saves.restoreSaves(target, file, { ...opts, scope: rulesOf(deps).scope });
     if (!r.ok) return { ok: false, error: r.error };
     if (r.entries && deps.onRestored) { try { deps.onRestored(r.entries); } catch { /* learning is best effort */ } }
     if (deps.deviceId) { try { await deps.client.confirmSaveDownloaded(rem.save.id, deps.deviceId); } catch { /* best effort */ } }

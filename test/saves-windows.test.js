@@ -164,3 +164,38 @@ test('a Proton-prefix zip restores onto a Windows layout and vice versa (same re
   assert.equal(r2.ok, true, r2.error);
   assert.equal(fs.readFileSync(path.join(pfx2, 'drive_c', 'users', 'steamuser', 'Saved Games', 'Game C', 'slot1.sav'), 'utf8'), 'DESKTOP');
 });
+
+test('restoring into the Windows profile writes only the game\'s save locations, never launcher folders', async () => {
+  // A per-game Proton prefix where the game also installed Ubisoft Connect
+  const pfx = tmp('pfx-ubi');
+  write(path.join(pfx, 'drive_c', 'users', 'steamuser'), {
+    'Documents/My Games/Game D/save1.sav': 'PROGRESS',
+    'AppData/Local/Ubisoft Game Launcher/settings.yaml': 'linux-paths: /home/deck',
+    'AppData/Roaming/Goldberg SteamEmu Saves/settings/account_name.txt': 'deck',
+    'Documents/stray-note.txt': 'loose file in the root',
+  });
+  const out = tmp('zipout-ubi');
+  const z = await saves.zipSaves(pfx, path.join(out, 'd.zip'));
+  assert.equal(z.ok, true, z.error);
+  assert.equal(z.files, 4, 'the prefix-side zip carries everything');
+
+  const win = makeRedirectedProfile({ 'AppData/Local/Ubisoft Game Launcher/settings.yaml': 'THE USER\'S OWN' });
+  const r = await saves.restoreSaves(win.layout, z.file);
+  assert.equal(r.ok, true, r.error);
+  assert.equal(fs.readFileSync(path.join(win.folders.documents, 'My Games', 'Game D', 'save1.sav'), 'utf8'), 'PROGRESS');
+  assert.equal(fs.readFileSync(path.join(win.folders.localAppData, 'Ubisoft Game Launcher', 'settings.yaml'), 'utf8'), 'THE USER\'S OWN', 'launcher settings untouched');
+  assert.equal(fs.existsSync(path.join(win.folders.appData, 'Goldberg SteamEmu Saves', 'settings')), false);
+  assert.equal(fs.existsSync(path.join(win.folders.documents, 'stray-note.txt')), false);
+  assert.equal(r.skipped, 3);
+  assert.deepEqual(saves.learnScope(r.entries), ['Documents/My Games/Game D'], 'only the game is learned as scope');
+
+  // A known scope is honoured too (a save location the zip alone wouldn't teach)
+  const z2dir = tmp('pfx-scope');
+  write(path.join(z2dir, 'drive_c', 'users', 'steamuser'), { 'Documents/loose-save.dat': 'LOOSE' });
+  const z2 = await saves.zipSaves(z2dir, path.join(out, 'e.zip'));
+  assert.equal((await saves.restoreSaves(makeRedirectedProfile({}).layout, z2.file)).ok, false, 'nothing in scope → refused, nothing written');
+  const win2 = makeRedirectedProfile({});
+  const r2 = await saves.restoreSaves(win2.layout, z2.file, { scope: ['Documents/loose-save.dat'] });
+  assert.equal(r2.ok, true, r2.error);
+  assert.equal(fs.readFileSync(path.join(win2.folders.documents, 'loose-save.dat'), 'utf8'), 'LOOSE');
+});

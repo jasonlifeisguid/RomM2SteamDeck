@@ -30,15 +30,14 @@
  * game that keeps progress in .ini), and `listSaveFiles()` reports exactly
  * what is included and what was excluded and why.
  *
- * Uses the bundled 7za. No electron imports.
+ * Uses the bundled 7-Zip (sevenzip.ts). No electron imports.
  */
 import { spawn, spawnSync } from 'child_process';
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-
-const path7za = (require('7zip-bin').path7za as string).replace('app.asar', 'app.asar.unpacked');
+import { sevenZipPath } from './sevenzip';
 
 /** Profile folders that hold game data. Everything else in the profile is skipped. */
 export const SAVE_FOLDERS = ['Documents', 'My Documents', 'Saved Games', 'AppData/Roaming', 'AppData/Local', 'AppData/LocalLow'];
@@ -50,6 +49,26 @@ export const JUNK_EXCLUDES = [
   'AppData/Local/Packages/**', 'AppData/Local/ConnectedDevicesPlatform/**', 'AppData/Local/Comms/**', 'AppData/Local/PeerDistRepub/**',
   'AppData/Local/Steam/**', 'AppData/Local/Ubisoft Game Launcher/logs/**', 'AppData/Local/Ubisoft Game Launcher/cache/**',
   'AppData/Local/Ubisoft Game Launcher/spool/**', 'AppData/Local/EasyAntiCheat/**', 'AppData/Roaming/EasyAntiCheat/**',
+];
+
+/**
+ * Folders that belong to a launcher, runtime or engine shared by many games —
+ * never one game's save location. A per-game Proton prefix has them too (the
+ * game installed Ubisoft Connect into it), so a save zip made there can carry
+ * them; they must not be learned as that game's scope or written into the real
+ * Windows profile, where they would overwrite the user's own launcher setup.
+ */
+export const SHARED_APP_FOLDERS = [
+  'AppData/Local/Ubisoft Game Launcher/**', 'AppData/Roaming/Ubisoft/**',
+  'AppData/Local/EpicGamesLauncher/**', 'AppData/Local/Epic Games/**',
+  'AppData/Local/Electronic Arts/**', 'AppData/Roaming/EA/**', 'AppData/Local/EADesktop/**',
+  'AppData/Roaming/Origin/**', 'AppData/Local/Origin/**',
+  'AppData/Roaming/Rockstar Games/Launcher/**', 'AppData/Local/Rockstar Games/Launcher/**',
+  'AppData/Local/Battle.net/**', 'AppData/Roaming/Battle.net/**', 'AppData/Local/Blizzard Entertainment/**',
+  'AppData/Roaming/GOG.com/**', 'AppData/Local/GOG.com/**',
+  'AppData/Roaming/Steam/**', 'AppData/Roaming/Goldberg SteamEmu Saves/settings/**', 'AppData/Roaming/GSE Saves/settings/**',
+  'AppData/Local/UnrealEngine/**', 'AppData/Local/CrashReportClient/**', 'AppData/LocalLow/Unity/**',
+  'AppData/Local/CEF/**', 'AppData/Local/pip/**', 'AppData/Roaming/Mozilla/**',
 ];
 
 /** Per-device settings, not progress. Default; user-editable; can be ignored per game. */
@@ -78,7 +97,11 @@ export interface SaveListing {
   unscoped?: boolean;
 }
 
-export interface SaveResult { ok: boolean; error?: string; file?: string; folders?: string[]; files?: number; bytes?: number; excludedConfig?: number; entries?: string[]; }
+export interface SaveResult {
+  ok: boolean; error?: string; file?: string; folders?: string[]; files?: number; bytes?: number; excludedConfig?: number; entries?: string[];
+  /** Restore into the Windows profile: files left out because they are outside the game's save locations. */
+  skipped?: number;
+}
 
 // ── Layouts ────────────────────────────────────────────────────────────────
 
@@ -277,7 +300,7 @@ export function learnScope(entries: string[]): string[] {
   const out: string[] = [];
   for (const raw of entries) {
     const rel = raw.replace(/\\/g, '/').replace(/^\/+/, '');
-    if (firstMatch(rel, JUNK_EXCLUDES)) continue;
+    if (firstMatch(rel, JUNK_EXCLUDES) || firstMatch(rel, SHARED_APP_FOLDERS)) continue;
     const parts = rel.split('/');
     const top = SAVE_FOLDERS.find((t) => rel.toLowerCase().startsWith(t.toLowerCase() + '/'));
     if (!top) continue;
@@ -296,8 +319,7 @@ export function learnScope(entries: string[]): string[] {
 
 function run7za(args: string[], cwd?: string): Promise<{ code: number; stderr: string; stdout: string }> {
   return new Promise((resolve, reject) => {
-    if (process.platform !== 'win32') { try { fs.chmodSync(path7za, 0o755); } catch { /* read-only */ } }
-    const proc = spawn(path7za, args, { cwd, windowsHide: true });
+    const proc = spawn(sevenZipPath(), args, { cwd, windowsHide: true });
     let stderr = ''; let stdout = '';
     proc.stdout.on('data', (b: Buffer) => { stdout += b.toString(); });
     proc.stderr.on('data', (b: Buffer) => { stderr += b.toString(); });
@@ -388,7 +410,7 @@ export async function listZipEntries(file: string): Promise<string[] | null> {
  * used to seed a brand-new prefix from a cloud save before the game's first
  * run. Returns the zip's file entries so the caller can learn a scope.
  */
-export async function restoreSaves(target: SaveTarget, zipFile: string, opts: { createProfile?: boolean } = {}): Promise<SaveResult> {
+export async function restoreSaves(target: SaveTarget, zipFile: string, opts: { createProfile?: boolean; scope?: string[] } = {}): Promise<SaveResult> {
   if (!fs.existsSync(zipFile)) return { ok: false, error: 'Backup file not found' };
   let layout = resolveLayout(target);
   if (!layout && opts.createProfile && typeof target === 'string') {
@@ -403,6 +425,35 @@ export async function restoreSaves(target: SaveTarget, zipFile: string, opts: { 
   const bad = [...tops].filter((t) => !allowed.has(t) || t.includes('..'));
   if (bad.length || entries.some((e) => e.split('/').includes('..'))) {
     return { ok: false, error: `Not a save backup — unexpected top-level entries: ${bad.slice(0, 3).join(', ') || '..'}` };
+  }
+  if (layout.requireScope) {
+    // The real Windows profile: write only inside the game's save locations —
+    // the ones already known plus those this zip reveals (learnScope skips
+    // launcher/runtime folders). A zip made in a Proton prefix can also hold
+    // whatever else that prefix had; none of it belongs in the user's profile.
+    const scope = normalizeScope([...(opts.scope || []), ...learnScope(entries)]).map((s) => s.toLowerCase());
+    const inScope = (rel: string) => scope.some((s) => rel.toLowerCase() === s || rel.toLowerCase().startsWith(s + '/'));
+    const wanted = entries.filter(inScope);
+    const skipped = entries.length - wanted.length;
+    if (!wanted.length) return { ok: false, error: 'Nothing in this backup is inside the game\'s save locations — set them in "What syncs…"' };
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-restore-'));
+    try {
+      const r = await run7za(['x', '-y', '-aoa', `-o${tmp}`, zipFile]);
+      if (r.code !== 0) return { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
+      const topsByLength = Object.keys(layout.roots).sort((a, b) => b.length - a.length);
+      for (const rel of wanted) {
+        const top = topsByLength.find((t) => rel.toLowerCase().startsWith(t.toLowerCase() + '/'));
+        const dest = top ? path.join(layout.roots[top], rel.slice(top.length + 1)) : path.join(layout.profile, rel);
+        const src = path.join(tmp, rel);
+        if (!fs.existsSync(src)) continue;
+        fs.mkdirSync(path.dirname(dest), { recursive: true });
+        fs.copyFileSync(src, dest);
+        try { const st = fs.statSync(src); fs.utimesSync(dest, st.atime, st.mtime); } catch { /* keep copy time */ }
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+    return { ok: true, folders: [...new Set(wanted.map((e) => e.split('/')[0]))], entries: wanted, skipped };
   }
   if (layout.direct) {
     const r = await run7za(['x', '-y', '-aoa', `-o${layout.profile}`, zipFile]);

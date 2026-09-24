@@ -1133,7 +1133,7 @@ async function createShortcut() {
   const res = await window.r2sd.createShortcut(exePickerRom.id, exeSelected.path, exePickerRom.name || exePickerRom.fs_name);
   closeExePicker();
   if (res.error) toast(res.error, 'error');
-  else toast('Desktop shortcut created', 'success');
+  else toast(res.appMenu ? 'Added to your app menu (runs through Faugus)' : 'Desktop shortcut created', 'success');
 }
 
 async function setDefaultFromPicker() {
@@ -1283,7 +1283,7 @@ async function openFoldersModal(rom) {
         const res = await window.r2sd.restoreSaves(rom.id, root);
         if (res.cancelled) return;
         if (res.error) toast(res.error, 'error');
-        else toast(`Saves restored (${res.folders.join(', ')})`, 'success');
+        else toast(`Saves restored (${res.folders.join(', ')})${res.skipped ? ` — ${res.skipped} files outside this game's save locations left out` : ''}`, 'success');
       });
       mk('What syncs…', 'The files a backup or cloud sync would include, and what is excluded as config', () => openSyncsModal(rom, root));
       g.appendChild(actions);
@@ -1527,7 +1527,10 @@ function closePlatformsModal() {
 }
 
 async function savePlatformsModal() {
-  const platforms = {};
+  // Start from what's saved: the dialog only lists platforms that currently
+  // have games, and a platform that is briefly empty (a server rescan) or
+  // missing from a failed refresh must not lose its folders on Save.
+  const platforms = { ...(state.config?.platforms || {}) };
   for (const row of document.querySelectorAll('.pf-row')) {
     const id = row.dataset.platformId;
     platforms[id] = {
@@ -1912,16 +1915,35 @@ function anyModalOpen() {
   return [...document.querySelectorAll('.modal')].some((m) => !m.hidden);
 }
 
+/**
+ * Close only the window on top. Windows open on top of each other (What
+ * syncs… over Saves & Folders over a game's details), and backing out should
+ * go one step, like a browser's Back — not straight to the grid. Listed
+ * top-most first; returns false when nothing was open.
+ */
+const MODAL_LAYERS = [
+  ['syncs-modal', () => closeSyncsModal()],
+  ['exe-modal', () => closeExePicker()],
+  ['folders-modal', () => closeFoldersModal()],
+  ['installpath-modal', () => closeInstallPathPicker()],
+  ['theme-modal', () => { $('theme-modal').hidden = true; }],
+  ['platforms-modal', () => closePlatformsModal()],
+  ['settings-modal', () => closeSettings()],
+  ['detail-modal', () => closeDetail()],
+];
+function closeTopModal() {
+  for (const [id, close] of MODAL_LAYERS) {
+    if (!$(id).hidden) { close(); return true; }
+  }
+  return false;
+}
+
 function gpBack() {
   if (gpOpenMenuItems().length) { closeAllDropdowns(); gpEnterZone(gp.zone, gp.index); return; }
-  if (!anyModalOpen()) return;
-  closeExePicker();
-  closeSyncsModal();
-  closeFoldersModal();
-  closeDetail();
-  closeSettings();
-  closePlatformsModal();
-  gpEnterZone('grid', gp.gridIndex || 0);
+  if (!closeTopModal()) return;
+  // Back in the window underneath, or on the grid when that was the last one
+  if (anyModalOpen()) gpEnterModal();
+  else gpEnterZone('grid', gp.gridIndex || 0);
 }
 
 /** LB / RB: straight to the previous or next platform, from anywhere. */
@@ -2227,15 +2249,10 @@ document.addEventListener('keydown', (e) => {
     if (e.key === '0') { e.preventDefault(); window.r2sd.setUiScale('auto'); return; }
   }
   if (e.key === 'Escape') {
-    $('theme-modal').hidden = true;
-    closeAllDropdowns();
-    closeExePicker();
-    closeInstallPathPicker();
-    closeSyncsModal();
-    closeFoldersModal();
-    closeDetail();
-    closeSettings();
-    closePlatformsModal();
+    // Same as the controller's B: an open menu first, then one window at a time
+    if (document.querySelector('.dropdown.open')) { closeAllDropdowns(); return; }
+    hideContextMenu();
+    closeTopModal();
   }
 });
 

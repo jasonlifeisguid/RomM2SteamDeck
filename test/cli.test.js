@@ -126,3 +126,28 @@ test('runExe rejects a missing file, a non-exe, and a missing Faugus', () => {
   assert.equal(noFaugus.ok, false);
   assert.match(noFaugus.error, /Faugus Launcher is not installed/);
 });
+
+test('desktop entries: a newline in a name cannot add a key, and Exec args are escaped per the spec', () => {
+  const d = cli.gameDesktopContents({
+    title: 'Evil\nExec=rm -rf ~', gameId: 'evil', exePath: '/games/Evil\nX=1/bin/game.exe', faugusBin: '/usr/bin/faugus-launcher',
+  });
+  const keys = d.split('\n').filter((l) => /^[A-Za-z]+=/.test(l)).map((l) => l.split('=')[0]);
+  assert.equal(keys.filter((k) => k === 'Exec').length, 1, 'exactly one Exec line');
+  assert.match(d, /^Name=Evil Exec=rm -rf ~$/m);
+  // Quoting: spaces/specials are quoted; " ` $ \ escaped, then backslashes doubled; % doubled
+  assert.equal(cli.execArg('/usr/bin/faugus'), '/usr/bin/faugus');
+  assert.equal(cli.execArg('/home/j/My Games/a.exe'), '"/home/j/My Games/a.exe"');
+  assert.equal(cli.execArg('/g/100%/x'), '/g/100%%/x');
+  // What lands in the file (String.raw: exactly these characters)
+  assert.equal(cli.execArg('/g/$HOME/x'), String.raw`"/g/\\$HOME/x"`);
+  assert.equal(cli.execArg('/g/say "hi"/x'), String.raw`"/g/say \\"hi\\"/x"`);
+  assert.equal(cli.execArg(String.raw`/g/back\slash`), String.raw`"/g/back\\\\slash"`);
+});
+
+test('a Flatpak Faugus launcher runs `flatpak run <id>` as separate words, not one quoted program', () => {
+  const d = cli.gameDesktopContents({ title: 'G', gameId: 'g', exePath: '/g/g.exe', faugusBin: cli.faugusCommand({ method: 'flatpak', target: 'io.github.Faugus.faugus-launcher' }) });
+  assert.match(d, /^Exec=flatpak run io\.github\.Faugus\.faugus-launcher --game g$/m);
+  // Shared prefix (no game id): the launcher hands Faugus the exe itself
+  const s = cli.gameDesktopContents({ title: 'G', gameId: null, exePath: '/g/My Game/g.exe', faugusBin: '/usr/bin/faugus-launcher' });
+  assert.match(s, /^Exec=\/usr\/bin\/faugus-launcher "\/g\/My Game\/g\.exe"$/m);
+});

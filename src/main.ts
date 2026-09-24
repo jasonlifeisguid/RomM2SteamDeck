@@ -657,7 +657,8 @@ function registerIpc(): void {
   ipcMain.handle('shortcut:create', (_e, romId: number, exePath: string, gameName: string) => {
     const exe = exeForRom(romId, exePath);
     if (!exe) return { error: EXE_OUTSIDE_GAME };
-    return shortcuts.createShortcut(exe, gameName);
+    const cfg = config.getPublicConfig();
+    return shortcuts.createShortcut(exe, gameName, { faugusEnabled: cfg.faugus !== 'off', faugusPerGame: cfg.faugusPrefix !== 'shared' });
   });
 
   // Set a game's default exe and launch it
@@ -783,7 +784,7 @@ function registerIpc(): void {
       detail: `Files from the backup will overwrite same-named files in\n${rootOf(tgt)}\n\nOther files are left alone.`,
     });
     if (confirm.response !== 0) return { ok: false, cancelled: true };
-    const r = await saves.restoreSaves(tgt, picked.filePaths[0]);
+    const r = await saves.restoreSaves(tgt, picked.filePaths[0], { scope: saveRulesFor(romId).scope });
     if (r.ok && r.entries && process.platform === 'win32') addSavePaths(romId, saves.learnScope(r.entries), 'learned from a restore');
     return r;
   });

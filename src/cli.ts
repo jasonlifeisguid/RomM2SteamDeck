@@ -123,6 +123,27 @@ export const EXE_MIME_TYPES = [
 
 export const HANDLER_DESKTOP_ID = 'r2sd-run-with-faugus.desktop';
 
+/**
+ * A value for one line of a .desktop file. Folder and game names come from
+ * disk and from RomM; a newline in one would start a new key — a second
+ * `Exec=` of someone else's choosing — so control characters become spaces.
+ */
+export function desktopValue(s: string): string {
+  return String(s).replace(/[\x00-\x1f\x7f]+/g, ' ').trim();
+}
+
+/**
+ * One argument of an Exec= line, quoted and escaped per the Desktop Entry
+ * spec when it needs to be: `%` doubles (field codes); inside double quotes
+ * `"` `` ` `` `$` `\` are backslash-escaped, and then — the spec's string rule,
+ * applied first on read — every backslash is doubled once more.
+ */
+export function execArg(arg: string): string {
+  const a = desktopValue(arg).replace(/%/g, '%%');
+  if (a && !/[\s"'\\`$<>~|&;*?#()]/.test(a)) return a;
+  return `"${a.replace(/[\\"`$]/g, (c) => `\\${c}`).replace(/\\/g, '\\\\')}"`;
+}
+
 /** The "Open With → Run with Faugus (R2SD)" entry. `launcher` is the AppImage path. */
 export function handlerDesktopContents(launcher: string): string {
   return [
@@ -130,7 +151,7 @@ export function handlerDesktopContents(launcher: string): string {
     'Type=Application',
     'Name=Run with Faugus (R2SD)',
     'Comment=Run this Windows program through Faugus Launcher, in its own prefix',
-    `Exec=${quoteExec(launcher)} --run-exe %f`,
+    `Exec=${execArg(launcher)} --run-exe %f`,
     'Icon=io.github.Faugus.faugus-launcher',
     'Terminal=false',
     'NoDisplay=true',                       // an Open With handler, not an app-menu entry
@@ -140,19 +161,53 @@ export function handlerDesktopContents(launcher: string): string {
   ].join('\n');
 }
 
-/** A per-game launcher, in the same shape Faugus's own shortcut option writes. */
-export function gameDesktopContents(game: { title: string; gameId: string; exePath: string; faugusBin: string; iconPath?: string }): string {
+/**
+ * A per-game launcher, in the same shape Faugus's own shortcut option writes.
+ * `faugusCmd` is the command as separate words — `["flatpak", "run", "<app id>"]`
+ * for the Flatpak; a single string is one program path. With no gameId (shared
+ * prefix) the launcher hands Faugus the exe itself.
+ */
+export function gameDesktopContents(game: { title: string; gameId?: string | null; exePath: string; faugusBin: string | string[]; iconPath?: string }): string {
+  const cmd = (Array.isArray(game.faugusBin) ? game.faugusBin : [game.faugusBin]).map(execArg).join(' ');
+  const target = game.gameId ? `--game ${execArg(game.gameId)}` : execArg(game.exePath);
   const lines = [
     '[Desktop Entry]',
-    `Name=${game.title}`,
-    `Exec=${quoteExec(game.faugusBin)} --game ${game.gameId}`,
+    `Name=${desktopValue(game.title)}`,
+    `Exec=${cmd} ${target}`,
   ];
-  if (game.iconPath) lines.push(`Icon=${game.iconPath}`);
-  lines.push('Type=Application', 'Categories=Game;', `Path=${path.dirname(game.exePath)}`, '');
+  if (game.iconPath) lines.push(`Icon=${desktopValue(game.iconPath)}`);
+  lines.push('Type=Application', 'Categories=Game;', `Path=${desktopValue(path.dirname(game.exePath))}`, '');
   return lines.join('\n');
 }
 
-const quoteExec = (p: string) => (/[\s"']/.test(p) ? `"${p}"` : p);
+/** The Faugus command line as separate words (Flatpak runs through `flatpak run`). */
+export function faugusCommand(install: faugus.FaugusInstall): string[] {
+  return install.method === 'flatpak' ? ['flatpak', 'run', install.target] : [install.target];
+}
+
+/**
+ * Write an app-menu launcher for a game run through Faugus: `--game <id>` for
+ * a registered game (its own prefix), else the exe in the shared prefix.
+ * Returns the file written.
+ */
+export function writeGameLauncher(
+  game: { title: string; gameId?: string | null; exePath: string },
+  install: faugus.FaugusInstall, env: faugus.Env, desktop: DesktopEnv,
+): string {
+  const dataHome = env.xdgDataHome || path.join(env.homedir, '.local', 'share');
+  const contents = gameDesktopContents({
+    title: game.title, gameId: game.gameId, exePath: game.exePath, faugusBin: faugusCommand(install),
+    // Faugus's runner writes this icon during the first launch; point at it
+    // either way so the entry picks it up once it exists.
+    iconPath: game.gameId ? path.join(dataHome, 'faugus-launcher', 'icons', `${game.gameId}.png`) : undefined,
+  });
+  const dir = applicationsDir(desktop);
+  const file = path.join(dir, `${game.gameId || faugus.formatTitle(game.title) || 'game'}.desktop`);
+  desktop.mkdirp(dir);
+  desktop.writeFile(file, contents);
+  desktop.run('update-desktop-database', [dir]);
+  return file;
+}
 
 export interface DesktopEnv {
   homedir: string;
@@ -242,24 +297,8 @@ export function runExe(exePath: string, opts: { title?: string; shared?: boolean
   if (res.registerError) out.error = res.registerError; // launched in the shared prefix instead
   // A launcher for next time (Faugus's own format, so it sits beside the ones it writes)
   if (opts.shortcut !== false && res.gameId) {
-    const dataHome = env.xdgDataHome || path.join(env.homedir, '.local', 'share');
-    const icon = path.join(dataHome, 'faugus-launcher', 'icons', `${res.gameId}.png`);
-    const faugusBin = install.method === 'flatpak' ? 'flatpak' : install.target;
-    const exec = install.method === 'flatpak' ? `run ${install.target}` : '';
-    const contents = gameDesktopContents({
-      title, gameId: res.gameId, exePath: file,
-      faugusBin: exec ? `${faugusBin} ${exec}`.trim() : faugusBin,
-      // Faugus's runner writes this icon during the first launch, i.e. just after
-      // us — point at it either way so the entry picks it up once it exists.
-      iconPath: icon,
-    });
-    const dir = applicationsDir(desktop);
-    const shortcutFile = path.join(dir, `${res.gameId}.desktop`);
     try {
-      desktop.mkdirp(dir);
-      desktop.writeFile(shortcutFile, contents);
-      desktop.run('update-desktop-database', [dir]);
-      out.shortcut = shortcutFile;
+      out.shortcut = writeGameLauncher({ title, gameId: res.gameId, exePath: file }, install, env, desktop);
     } catch { /* the game still launched */ }
   }
   return out;

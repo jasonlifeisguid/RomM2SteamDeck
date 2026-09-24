@@ -114,3 +114,11 @@ test('real shortcuts.vdf on this machine round-trips byte-for-byte', { skip: !re
   assert.ok(parsed.shortcuts && typeof parsed.shortcuts === 'object');
   assert.ok(serializeVdf(parsed).equals(original), 'serializer must reproduce Steam\'s own bytes');
 });
+
+test('nextShortcutKey never lands on an existing shortcut, even with gaps', () => {
+  const { nextShortcutKey } = require('../dist/steam.js');
+  assert.equal(nextShortcutKey({}), '0');
+  assert.equal(nextShortcutKey({ 0: {}, 1: {} }), '2');
+  assert.equal(nextShortcutKey({ 0: {}, 2: {} }), '3', 'count would have been 2 — an existing entry');
+  assert.equal(nextShortcutKey({ 5: {}, junk: {} }), '6');
+});

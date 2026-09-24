@@ -1,7 +1,7 @@
 {
   "name": "romm2steamdeck-app",
   "productName": "RomM2SteamDeck",
-  "version": "2.2.30",
+  "version": "2.2.31",
   "description": "Desktop client for browsing and downloading from a RomM library",
   "main": "dist/main.js",
   "author": "Jason Walters",
@@ -31,9 +31,6 @@
       "renderer/**/*",
       "package.json"
     ],
-    "asarUnpack": [
-      "**/node_modules/7zip-bin/**"
-    ],
     "win": {
       "icon": "build/icon.ico",
       "target": [
@@ -48,6 +45,19 @@
           "arch": [
             "x64"
           ]
+        }
+      ],
+      "extraResources": [
+        {
+          "from": "vendor/7zip/win-x64",
+          "to": "7zip",
+          "filter": [
+            "7za.exe"
+          ]
+        },
+        {
+          "from": "vendor/7zip/License.txt",
+          "to": "7zip/License.txt"
         }
       ]
     },
@@ -66,6 +76,19 @@
       "artifactName": "RomM2SteamDeck.AppImage",
       "target": [
         "AppImage"
+      ],
+      "extraResources": [
+        {
+          "from": "vendor/7zip/linux-x64",
+          "to": "7zip",
+          "filter": [
+            "7zz"
+          ]
+        },
+        {
+          "from": "vendor/7zip/License.txt",
+          "to": "7zip/License.txt"
+        }
       ]
     },
     "mac": {
@@ -73,6 +96,19 @@
       "category": "public.app-category.games",
       "target": [
         "dmg"
+      ],
+      "extraResources": [
+        {
+          "from": "vendor/7zip/mac",
+          "to": "7zip",
+          "filter": [
+            "7zz"
+          ]
+        },
+        {
+          "from": "vendor/7zip/License.txt",
+          "to": "7zip/License.txt"
+        }
       ]
     }
   },
@@ -83,7 +119,6 @@
     "typescript": "^6.0.3"
   },
   "dependencies": {
-    "7zip-bin": "^5.2.0",
     "unzipper": "^0.12.5"
   }
 }

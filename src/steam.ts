@@ -220,6 +220,17 @@ export function buildShortcutEntry(exePath: string, appName: string, opts: { sta
   };
 }
 
+/**
+ * The key for a new shortcut: one past the highest numeric key. Not the entry
+ * count — with a gap in the numbering ("0", "2") the count is an existing key,
+ * and the new game would silently replace someone's shortcut.
+ */
+export function nextShortcutKey(shortcuts: Record<string, unknown>): string {
+  let max = -1;
+  for (const k of Object.keys(shortcuts)) if (/^\d+$/.test(k)) max = Math.max(max, Number(k));
+  return String(max + 1);
+}
+
 export async function addNonSteamGame(exePath: string, appName: string, opts: { startDir?: string; tags?: string[] } = {}): Promise<AddResult> {
   if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
   if (await isSteamRunning()) {
@@ -288,9 +299,8 @@ export async function addNonSteamGame(exePath: string, appName: string, opts: { 
     // Add the entry only if it's not already there (otherwise we just repaired it).
     let appId = 0;
     if (!exactExists) {
-      const nextIndex = Object.keys(shortcuts).length;
       const entry = buildShortcutEntry(exePath, appName, { startDir: opts.startDir, tags: opts.tags, overlayOff: isR2SD });
-      shortcuts[String(nextIndex)] = entry;
+      shortcuts[nextShortcutKey(shortcuts)] = entry;
       appId = entry.appid as number;
     }
 

@@ -77,8 +77,7 @@ test('backup zips only save folders, excludes Temp/Microsoft; restore into anoth
 test('restore refuses a zip that is not a save backup', async () => {
   const dst = makePrefix('dst2', { 'Documents/a.txt': 'a' });
   const { spawnSync } = require('child_process');
-  const path7za = require('7zip-bin').path7za;
-  if (process.platform !== 'win32') { try { fs.chmodSync(path7za, 0o755); } catch {} }
+  const path7za = require('../dist/sevenzip.js').sevenZipPath();
   const stage = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-badzip-')); roots.push(stage);
   fs.mkdirSync(path.join(stage, 'windows'), { recursive: true });
   fs.writeFileSync(path.join(stage, 'windows', 'evil.dll'), 'x');

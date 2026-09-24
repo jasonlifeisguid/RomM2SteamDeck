@@ -31,10 +31,7 @@ import * as config from './config';
 import { isInsideFolder, safeFileName, safeJoin, sanitizeForMatch, sanitizeFolderName } from './fsutil';
 
 const unzipper = require('unzipper');
-// In a packaged app the 7za binary is unpacked from the asar archive (see
-// asarUnpack in package.json); rewrite the path so spawn can find it.
-// In dev the path has no app.asar segment, so the replace is a no-op.
-const path7za = (require('7zip-bin').path7za as string).replace('app.asar', 'app.asar.unpacked');
+import { sevenZipPath } from './sevenzip';
 
 export interface DownloadRecord {
   romId: number;
@@ -66,6 +63,13 @@ export interface RomInfo {
 export type EventSender = (payload: Record<string, unknown>) => void;
 
 const activeDownloads = new Map<number, AbortController>();
+
+/** Network patience: no bytes (or no answer at all) for `stallMs` → abort and
+ *  retry after the next `retryDelaysMs` entry. Shortened by tests. */
+const timeouts = { stallMs: 60_000, retryDelaysMs: [2000, 5000] };
+export function setTimeoutsForTests(t: Partial<typeof timeouts> | null): void {
+  Object.assign(timeouts, t ?? { stallMs: 60_000, retryDelaysMs: [2000, 5000] });
+}
 
 // ── Serial download queue ───────────────────────────────────────────────
 // Clicking download enqueues; one download+extract runs at a time, the rest
@@ -271,10 +275,7 @@ export function spaceShortfall(needs: { dir: string; bytes: number; what: string
 /** Total unpacked size of an archive from its headers (7za l -slt), or null. */
 function archiveUnpackedSize(archive: string): Promise<number | null> {
   return new Promise((resolve) => {
-    if (process.platform !== 'win32') {
-      try { fs.chmodSync(path7za, 0o755); } catch { /* read-only or already ok */ }
-    }
-    const proc = spawn(path7za, ['l', '-slt', archive], { windowsHide: true });
+    const proc = spawn(sevenZipPath(), ['l', '-slt', archive], { windowsHide: true });
     let out = '';
     proc.stdout.on('data', (buf: Buffer) => { out += buf.toString(); });
     proc.on('error', () => resolve(null));
@@ -290,14 +291,8 @@ function archiveUnpackedSize(archive: string): Promise<number | null> {
 
 function run7za(archive: string, dest: string, onPercent: (pct: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
-    // Belt-and-suspenders for running from source on Linux/macOS, where the
-    // bundled 7za may lack the exec bit. In a packaged AppImage this path is
-    // read-only (the afterPack hook already set it), so ignore failures.
-    if (process.platform !== 'win32') {
-      try { fs.chmodSync(path7za, 0o755); } catch { /* read-only or already ok */ }
-    }
-    // -bsp1 prints progress percentages to stdout
-    const proc = spawn(path7za, ['x', archive, `-o${dest}`, '-y', '-bsp1'], { windowsHide: true });
+    // -bsp1 prints progress percentages to stdout (the exec bit is sevenZipPath's job)
+    const proc = spawn(sevenZipPath(), ['x', archive, `-o${dest}`, '-y', '-bsp1'], { windowsHide: true });
     let stderr = '';
     proc.stdout.on('data', (buf: Buffer) => {
       const m = buf.toString().match(/(\d+)%/);
@@ -391,9 +386,8 @@ export async function startDownload(
 
   emit({ status: 'starting' });
 
-  const STALL_TIMEOUT_MS = 60_000; // no bytes for this long → abort + retry
-  const MAX_ATTEMPTS = 3;          // 1 try + 2 automatic retries
-  const RETRY_DELAY_MS = [2000, 5000];
+  const { stallMs: STALL_TIMEOUT_MS, retryDelaysMs: RETRY_DELAY_MS } = timeouts;
+  const MAX_ATTEMPTS = 3; // 1 try + 2 automatic retries
 
   let filePath = '';
   let partPath = '';
@@ -432,10 +426,19 @@ export async function startDownload(
       }
 
       try {
-        const response = await client.openDownloadStream(
-          rom.id, rom.fsName, controller.signal,
-          resumeFrom > 0 ? { from: resumeFrom, ifRange: etag || undefined } : undefined
-        );
+        // The stall watchdog below only starts once the server has answered; a
+        // server that accepts the connection and then says nothing would
+        // otherwise hold this download — and the whole queue behind it — forever.
+        const noAnswer = setTimeout(() => { controller.stalled = true; controller.abort(); }, STALL_TIMEOUT_MS);
+        let response: Response;
+        try {
+          response = await client.openDownloadStream(
+            rom.id, rom.fsName, controller.signal,
+            resumeFrom > 0 ? { from: resumeFrom, ifRange: etag || undefined } : undefined
+          );
+        } finally {
+          clearTimeout(noAnswer);
+        }
         etag = response.headers.get('etag') || etag;
 
         // 206 = the server is continuing our partial. Anything else (fresh
@@ -622,11 +625,15 @@ export async function startDownload(
         try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best effort */ }
         fs.renameSync(partPath, filePath);
         pumped = true;
-      } catch (err) {
+      } catch (caught) {
         // Not enough space: retrying won't help, and it isn't a cancel.
-        if (spaceRefused) throw err;
+        if (spaceRefused) throw caught;
         // User cancel (abort without the stall flag) propagates immediately.
-        if (controller.signal.aborted && !controller.stalled) { userCancelled = true; throw err; }
+        if (controller.signal.aborted && !controller.stalled) { userCancelled = true; throw caught; }
+        // Our own watchdog aborted it: say what happened, not "This operation was aborted".
+        const err = controller.stalled
+          ? new Error(`The server stopped responding (nothing for ${Math.round(STALL_TIMEOUT_MS / 1000)} s)`)
+          : caught;
         // Keep the partial + ETag so the next attempt (or a later manual
         // download) can resume instead of starting over.
         if (partPath && fs.existsSync(partPath) && fs.statSync(partPath).size > 0) {

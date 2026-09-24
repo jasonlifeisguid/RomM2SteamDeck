@@ -9,10 +9,8 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-const path7za = require('7zip-bin').path7za;
-// The bundled 7za ships without its exec bit on Linux/macOS (the packaged app
-// fixes that in build/after-pack.js; run7za() also chmods at runtime).
-if (process.platform !== 'win32') { try { fs.chmodSync(path7za, 0o755); } catch { /* read-only */ } }
+// The bundled 7-Zip (vendor/7zip); sevenZipPath() also restores its exec bit
+const path7za = require('../dist/sevenzip.js').sevenZipPath();
 const config = require('../dist/config.js');
 const downloads = require('../dist/downloads.js');
 
@@ -187,6 +185,27 @@ test('non-extract platform: plain download to the platform folder', async () => 
   assert.equal(events.at(-1).path, dest);
   assert.equal(fs.statSync(dest).size, 70000);
   assert.equal(downloads.findDownload(21).filePath, dest);
+});
+
+test('a server that never answers times out and is retried, instead of blocking the queue forever', async (t2) => {
+  const t = makeTemp();
+  downloads.setTimeoutsForTests({ stallMs: 150, retryDelaysMs: [10, 10] });
+  t2.after(() => downloads.setTimeoutsForTests(null));
+  let calls = 0;
+  const silent = {
+    openDownloadStream: (_id, _name, signal) => new Promise((_resolve, reject) => {
+      calls++;
+      signal.addEventListener('abort', () => reject(new Error('This operation was aborted')));
+    }),
+  };
+  const timeout = new Promise((_, rej) => setTimeout(() => rej(new Error('startDownload hung')), 10000));
+  const events = await Promise.race([run(silent, { id: 70, name: 'Quiet', fsName: 'q.bin', platformId: 2, size: 0 }), timeout]);
+  assert.equal(calls, 3, 'first try + 2 retries');
+  const last = events.at(-1);
+  assert.equal(last.status, 'error');
+  assert.match(last.message, /server stopped responding/i);
+  assert.equal(events.filter((e) => /retrying/.test(e.message || '')).length, 2);
+  assert.equal(downloads.getQueueSnapshot().items.length, 0);
 });
 
 test('a server-chosen file name cannot write outside the platform folder', async () => {
