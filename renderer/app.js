@@ -763,6 +763,14 @@ window.r2sd.onCloudEvent((e) => {
   if (e.action === 'uploaded') toast(`${e.gameName}: saves uploaded to RomM`, 'success');
   else if (e.action === 'unscoped') toast(`${e.gameName}: not synced — no save locations known. Saves & Folders… → What syncs… to set them.`, 'error');
   else if (e.action === 'error') toast(`${e.gameName}: cloud save upload failed — ${e.error}`, 'error');
+  else if (e.action === 'conflict') {
+    // Not uploaded: RomM got a newer save from another device while this one was
+    // playing too. Stays up until handled — the user picks which one to keep.
+    stickyToast(`${e.gameName}: saves NOT uploaded — RomM also has newer saves from another device. Choose which to keep in Saves & Folders.`, [
+      { label: 'Saves & Folders…', fn: () => openFoldersModal({ id: e.romId, name: e.gameName }) },
+      { label: 'Later' },
+    ], 'error');
+  }
 });
 
 window.r2sd.onUpdateAvailable((info) => {
@@ -1704,9 +1712,13 @@ async function testConnection() {
     username: $('cfg-username').value,
     password: $('cfg-password').value,
   });
-  if (res.ok) {
+  if (res.ok && res.loginChecked === false) {
+    // Reachable, but no password to try: the heartbeat alone can't vouch for the login
+    result.className = 'small';
+    result.textContent = `Server reachable — RomM ${res.version || '(version unknown)'}. Enter the password to check your login.`;
+  } else if (res.ok) {
     result.className = 'small success';
-    result.textContent = `Connected — RomM ${res.version || '(version unknown)'}`;
+    result.textContent = `Connected and signed in — RomM ${res.version || '(version unknown)'}`;
   } else {
     result.className = 'small error';
     result.textContent = res.error || 'Connection failed';

@@ -240,6 +240,19 @@ export class RommClient {
     }
   }
 
+  /** Does the server accept these credentials? /heartbeat needs no login, so it
+   *  can't tell; the platform list does (and is small). */
+  async verifyLogin(): Promise<{ ok: boolean; status?: number; error?: string }> {
+    try {
+      await this.get('/platforms/');
+      return { ok: true };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      const status = Number(msg.match(/failed: (\d{3})/)?.[1]) || undefined;
+      return { ok: false, status, error: msg };
+    }
+  }
+
   async getPlatforms(): Promise<RommPlatform[]> {
     const data = await this.get('/platforms/');
     return Array.isArray(data) ? (data as RommPlatform[]) : [];

@@ -50,3 +50,28 @@ test('isInsideFolder', () => {
   assert.equal(isInsideFolder(root, path.join(root, '..', 'x.exe')), false);
   assert.equal(isInsideFolder(root, root + '2'), false);
 });
+
+test('safeFileName: a server-chosen name can never become a path', () => {
+  const { safeFileName } = require('../dist/fsutil.js');
+  assert.equal(safeFileName('Game (USA).zip', 'x'), 'Game (USA).zip');
+  assert.equal(safeFileName('../../.bashrc', 'x'), '.bashrc', 'only the last segment survives');
+  assert.equal(safeFileName(String.raw`..\..\Windows\evil.dll`, 'x'), 'evil.dll');
+  assert.equal(safeFileName('/etc/passwd', 'x'), 'passwd');
+  assert.equal(safeFileName('..', 'fallback'), 'fallback');
+  assert.equal(safeFileName('.', 'fallback'), 'fallback');
+  assert.equal(safeFileName('', 'fallback'), 'fallback');
+  assert.equal(safeFileName('a<b>c:d|e?.zip', 'x'), 'abcde.zip', 'Windows-reserved characters dropped');
+  assert.equal(safeFileName('name.  ', 'x'), 'name');
+  assert.equal(safeFileName('CON.zip', 'x'), '_CON.zip', 'Windows device names are escaped');
+  assert.equal(safeFileName('line\nbreak.zip', 'x'), 'linebreak.zip');
+});
+
+test('whenSpawned settles with null on start and with the error on failure', async () => {
+  const { whenSpawned } = require('../dist/fsutil.js');
+  const { EventEmitter } = require('events');
+  const ok = new EventEmitter(); const p1 = whenSpawned(ok); ok.emit('spawn');
+  assert.equal(await p1, null);
+  const bad = new EventEmitter(); const p2 = whenSpawned(bad); bad.emit('error', new Error('ENOENT'));
+  assert.equal((await p2).message, 'ENOENT');
+  assert.doesNotThrow(() => bad.emit('error', new Error('later')), 'a later error has a listener');
+});

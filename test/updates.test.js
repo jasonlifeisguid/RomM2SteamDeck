@@ -4,6 +4,9 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 
 const { compareVersions, checkForUpdate, RELEASES_API } = require('../dist/updates.js');
+const fs = require('fs');
+const os = require('os');
+const path = require('path');
 const { watchGameExit } = require('../dist/shortcuts.js');
 
 test('compareVersions: numeric, tolerant of v prefix and length, pre-releases sort first', () => {
@@ -47,4 +50,56 @@ test('watchGameExit waits for the child AND for the install folder to go quiet',
   // While the child was alive nothing was polled; afterwards the folder was seen busy before two idle ticks
   assert.ok(counts.some((c) => c > 0));
   assert.deepEqual(counts.slice(-2), [0, 0]);
+});
+
+// ── launchGame: a game that can't start is an error, not "Launching…" ───────
+
+const { launchGame } = require('../dist/shortcuts.js');
+const { EventEmitter } = require('events');
+
+/** A spawn stand-in: the fake child starts, or fails with `errorCode`. */
+function fakeSpawn(errorCode) {
+  const calls = [];
+  const fn = (cmd, args, opts) => {
+    calls.push({ cmd, args, opts });
+    const child = new EventEmitter();
+    child.pid = 4242; child.unref = () => {};
+    setImmediate(() => {
+      if (errorCode) { const e = new Error(`spawn ${cmd} ${errorCode}`); e.code = errorCode; child.emit('error', e); }
+      else child.emit('spawn');
+    });
+    return child;
+  };
+  fn.calls = calls;
+  return fn;
+}
+
+function fakeGame() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-launch-'));
+  const exe = path.join(dir, process.platform === 'win32' ? 'Game.exe' : 'game.sh');
+  fs.writeFileSync(exe, 'x');
+  return { dir, exe };
+}
+
+test('launchGame reports a program that fails to start instead of claiming success', async () => {
+  const { dir, exe } = fakeGame();
+  const res = await launchGame(exe, { spawnFn: fakeSpawn('ENOENT') });
+  assert.equal(res.ok, false);
+  assert.match(res.error, /Could not start/);
+  const ok = await launchGame(exe, { spawnFn: fakeSpawn(null) });
+  assert.equal(ok.ok, true); assert.equal(ok.pid, 4242);
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('launchGame (Windows): a game that needs admin goes through the UAC prompt', { skip: process.platform !== 'win32' && 'Windows only' }, async () => {
+  const { dir, exe } = fakeGame();
+  const opened = [];
+  const res = await launchGame(exe, { spawnFn: fakeSpawn('EACCES'), openElevated: async (p) => { opened.push(p); return ''; } });
+  assert.deepEqual(opened, [exe]);
+  assert.equal(res.ok, true); assert.equal(res.elevated, true);
+  // The user says no at the UAC prompt → an error that says why
+  const denied = await launchGame(exe, { spawnFn: fakeSpawn('EACCES'), openElevated: async () => 'The operation was canceled by the user.' });
+  assert.equal(denied.ok, false);
+  assert.match(denied.error, /needs administrator rights.*canceled/);
+  fs.rmSync(dir, { recursive: true, force: true });
 });

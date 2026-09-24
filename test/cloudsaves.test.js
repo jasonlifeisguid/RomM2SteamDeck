@@ -167,6 +167,36 @@ test('beforeLaunch/afterExit: device A uploads after play, device B seeds a fres
   act = await cloud.beforeLaunch(deps(client, recA), 7, A.root, 'Stellar Blade');
   assert.equal(act.action, 'conflict');
   assert.equal(fs.readFileSync(path.join(A.profile, 'AppData/Local/SB/Saved/SaveGames/765/StellarBladeSave00.sav'), 'utf8'), 'SAVE-A4', 'local kept');
+
+  // The game launches anyway. When it exits, A must NOT upload over B's newer
+  // save — before 2.2.30 it did, and B then restored A's save over its own.
+  const before = client.store.length;
+  assert.equal((await cloud.afterExit(deps(client, recA), 7, A.root, 'Stellar Blade')).action, 'conflict');
+  assert.equal(client.store.length, before, 'nothing uploaded');
+  assert.equal((await cloud.beforeLaunch(deps(client, recB), 7, bRoot, 'Stellar Blade')).action, 'none', 'B keeps its own progress');
+  assert.equal(fs.readFileSync(path.join(bRoot, 'drive_c/users/steamuser/AppData/Local/SB/Saved/SaveGames/765/StellarBladeSave00.sav'), 'utf8'), 'SAVE-B4');
+});
+
+test('afterExit: a launch that could not reach RomM does not upload blindly afterwards', async () => {
+  const client = stubClient();
+  const A = unrealPrefix(); const recA = { rec: null };
+  await cloud.beforeLaunch(deps(client, recA), 8, A.root, 'G');                        // A uploads v1
+  const B = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-devB-')); roots.push(B);
+  const bRoot = path.join(B, 'g'); const recB = { rec: null };
+  await cloud.beforeLaunch(deps(client, recB), 8, bRoot, 'G');                          // B seeded with v1
+  fs.writeFileSync(path.join(bRoot, 'drive_c/users/steamuser/AppData/Local/SB/Saved/SaveGames/765/StellarBladeSave00.sav'), 'B-PROGRESS');
+  await cloud.afterExit(deps(client, recB), 8, bRoot, 'G');                             // B uploads v2
+  // A is offline at launch (so it never learns about v2), plays, and is online again at exit
+  const offline = { ...client, savesSummary: async () => { throw new Error('fetch failed'); } };
+  assert.equal((await cloud.beforeLaunch(deps(offline, recA), 8, A.root, 'G')).action, 'error');
+  fs.writeFileSync(path.join(A.profile, 'AppData/Local/SB/Saved/SaveGames/765/StellarBladeSave00.sav'), 'A-OFFLINE');
+  assert.equal((await cloud.afterExit(deps(client, recA), 8, A.root, 'G')).action, 'conflict');
+  // …and when only this device changed, the upload still happens
+  const solo = stubClient(); // the stub keeps one save list, so a separate game gets its own
+  const C = unrealPrefix(); const recC = { rec: null };
+  await cloud.beforeLaunch(deps(solo, recC), 9, C.root, 'H');
+  fs.writeFileSync(path.join(C.profile, 'AppData/Local/SB/Saved/SaveGames/765/StellarBladeSave00.sav'), 'C-2');
+  assert.equal((await cloud.afterExit(deps(solo, recC), 9, C.root, 'H')).action, 'uploaded');
 });
 
 // ── Live round trip (opt-in) ──────────────────────────────────────────────

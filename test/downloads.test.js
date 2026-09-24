@@ -189,6 +189,22 @@ test('non-extract platform: plain download to the platform folder', async () => 
   assert.equal(downloads.findDownload(21).filePath, dest);
 });
 
+test('a server-chosen file name cannot write outside the platform folder', async () => {
+  const t = makeTemp();
+  const bin = path.join(t.root, 'payload.bin');
+  fs.writeFileSync(bin, 'PAYLOAD');
+  for (const [i, sent] of ['..%2F..%2Fescaped.bin', '../../escaped.bin', '..\\..\\escaped.bin', '%E0%A4%A.bin'].entries()) {
+    const events = await run(stubClient(bin, sent), { id: 60 + i, name: 'Plain', fsName: 'rom.bin', platformId: 2, size: 0 });
+    const last = events.at(-1);
+    assert.equal(last.status, 'complete', `${sent}: ${JSON.stringify(last)}`);
+    assert.equal(path.dirname(last.path), t.loose, `${sent} stays in the platform folder`);
+  }
+  assert.equal(fs.existsSync(path.join(t.root, 'escaped.bin')), false);
+  assert.equal(fs.existsSync(path.join(path.dirname(t.root), 'escaped.bin')), false);
+  assert.ok(fs.existsSync(path.join(t.loose, 'escaped.bin')));
+  assert.ok(fs.existsSync(path.join(t.loose, '%E0%A4%A.bin')), 'a malformed %-escape is kept as sent, not a crash + retry loop');
+});
+
 test('zip-slip entries are dropped, the rest extracts', async () => {
   const t = makeTemp();
   // Build the zip, then inject a traversal entry name by hand: 7za won't

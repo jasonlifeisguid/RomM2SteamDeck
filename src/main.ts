@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { pathToFileURL } from 'url';
-import { RommClient, RommPlatform, RommRom, slimRom } from './romm';
+import { normalizeBaseUrl, RommClient, RommPlatform, RommRom, slimRom } from './romm';
 import * as config from './config';
 import * as cache from './cache';
 import * as downloads from './downloads';
@@ -526,10 +526,27 @@ function registerIpc(): void {
   ipcMain.handle('config:clearCache', () => cache.clearCache());
 
   ipcMain.handle('connection:test', async (_e, creds: { baseUrl: string; username: string; password: string }) => {
-    // Test with the provided password, or the stored one if left blank
-    const password = creds.password || config.getCredentials().password;
-    const client = new RommClient(creds.baseUrl, creds.username, password);
-    return client.heartbeat();
+    const baseUrl = String(creds?.baseUrl || '');
+    const username = String(creds?.username || '').trim();
+    // A blank password box means "(unchanged)" — but the stored password only
+    // ever goes to the server and user it was saved for, never to a URL that
+    // was just typed (a typo, or a different server).
+    const saved = config.getCredentials();
+    const sameAccount = normalizeBaseUrl(baseUrl) === normalizeBaseUrl(saved.baseUrl) && username === saved.username;
+    const password = String(creds?.password || '') || (sameAccount ? saved.password : '');
+    const client = new RommClient(baseUrl, username, password);
+    const hb = await client.heartbeat();
+    if (!hb.ok) return hb;
+    // Reachable. Now the login itself — the heartbeat answers without one.
+    if (!username || !password) return { ...hb, loginChecked: false };
+    const login = await client.verifyLogin();
+    if (login.ok) return { ...hb, loginChecked: true };
+    return {
+      ok: false, version: hb.version,
+      error: login.status === 401 || login.status === 403
+        ? `Server reachable (RomM ${hb.version || '?'}), but it rejected this username or password`
+        : login.error,
+    };
   });
 
   // Library (stale-while-revalidate)
@@ -710,7 +727,9 @@ function registerIpc(): void {
       }
       if (cloudTarget) cloudAction = await cloud.beforeLaunch(await cloudDeps(romId), romId, cloudTarget, gameName);
     }
-    const res = shortcuts.launchGame(target, {
+    const res = await shortcuts.launchGame(target, {
+      // A game that needs admin rights: the shell's launcher shows the UAC prompt
+      openElevated: (exe) => shell.openPath(exe),
       faugusEnabled: cfg.faugus !== 'off',
       faugusPerGame: cfg.faugusPrefix !== 'shared',
       title: rec?.romName,

@@ -190,7 +190,15 @@ export async function beforeLaunch(deps: CloudDeps, romId: number, target: saves
   }
 }
 
-/** After the game exits: upload if anything changed. */
+/**
+ * After the game exits: upload if this device's saves changed — but only if
+ * RomM hasn't moved on since this device last synced. The game launches even
+ * when beforeLaunch stopped on a conflict (or couldn't reach the server), so
+ * "local changed" alone is not enough: uploading then would make this device's
+ * save the latest and bury the other device's progress, which that device
+ * would then restore over its own on its next launch. Same rule as before
+ * launch: when both sides changed, nothing is overwritten and the user decides.
+ */
 export async function afterExit(deps: CloudDeps, romId: number, target: saves.SaveTarget, gameName: string): Promise<AutoAction> {
   try {
     const local = saves.listSaveFiles(target, rulesOf(deps));
@@ -198,6 +206,10 @@ export async function afterExit(deps: CloudDeps, romId: number, target: saves.Sa
     if (!local || !local.included.length) return { action: 'none' };
     const rec = deps.getRecord();
     if (rec && saves.fingerprint(local) === rec.fingerprint) return { action: 'none' };
+    const rem = await latestRemote(deps.client, romId);
+    const { state } = computeState(local, rem?.save ?? null, rec);
+    if (state === 'conflict') return { action: 'conflict' };
+    if (state !== 'local-newer' && state !== 'local-only') return { action: 'none' };
     const r = await upload(deps, romId, target, gameName);
     return r.ok ? { action: 'uploaded' } : { action: 'error', error: r.error! };
   } catch (err) {

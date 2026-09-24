@@ -28,7 +28,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { RommClient } from './romm';
 import * as config from './config';
-import { isInsideFolder, safeJoin, sanitizeForMatch, sanitizeFolderName } from './fsutil';
+import { isInsideFolder, safeFileName, safeJoin, sanitizeForMatch, sanitizeFolderName } from './fsutil';
 
 const unzipper = require('unzipper');
 // In a packaged app the 7za binary is unpacked from the asar archive (see
@@ -397,7 +397,10 @@ export async function startDownload(
 
   let filePath = '';
   let partPath = '';
-  let fileName = rom.fsName;
+  // Every name that ends up in a path is reduced to a plain file name first:
+  // the server chooses it (fs_name, Content-Disposition), so "../../x" must
+  // not be able to walk out of the platform folder.
+  let fileName = safeFileName(rom.fsName, `rom-${rom.id}`);
   let etag = '';
   let downloaded = 0;
   let total = 0;
@@ -425,7 +428,7 @@ export async function startDownload(
       let resumeFrom = 0;
       if (meta) {
         try { resumeFrom = fs.statSync(meta.partPath).size; } catch { resumeFrom = 0; }
-        if (resumeFrom > 0) { fileName = meta.fileName; etag = meta.etag || etag; }
+        if (resumeFrom > 0) { fileName = safeFileName(meta.fileName, fileName); etag = meta.etag || etag; }
       }
 
       try {
@@ -448,7 +451,11 @@ export async function startDownload(
           // Prefer the server-provided filename (multi-file roms arrive as a zip)
           const disposition = response.headers.get('content-disposition');
           const dispMatch = disposition?.match(/filename="?([^";]+)"?/);
-          if (dispMatch) fileName = decodeURIComponent(dispMatch[1]);
+          if (dispMatch) {
+            let raw = dispMatch[1];
+            try { raw = decodeURIComponent(raw); } catch { /* not %-encoded: use as sent */ }
+            fileName = safeFileName(raw, fileName);
+          }
         }
 
         filePath = path.join(archiveDir, fileName);

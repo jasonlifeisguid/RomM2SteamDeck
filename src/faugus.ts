@@ -21,6 +21,7 @@
  * No electron imports — unit-testable standalone; fs/env are injectable.
  */
 import { execFileSync, spawn } from 'child_process';
+import { whenSpawned } from './fsutil';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as nodePath from 'path';
@@ -334,6 +335,8 @@ export interface LaunchResult {
   exitTracked?: boolean;
   /** The launcher child's pid (the game's windows are its descendants). */
   pid?: number;
+  /** Settles once the OS started the launcher (null) or refused to (the error). */
+  started?: Promise<Error | null>;
 }
 
 /**
@@ -363,11 +366,14 @@ export function launchWithFaugus(
       stdio: 'ignore',
     });
     child.unref();
+    // Also keeps a failed spawn (missing flatpak, unexecutable AppImage) from
+    // becoming an unhandled 'error' event in the main process.
+    const started = whenSpawned(child);
     // `--game` runs Faugus's runner in the foreground of this child, which
     // waits for the game — so 'exit' means the game closed. (The bare-exe path
     // returns immediately after handing off; exit tracking only works per-game.)
     if (opts.onExit && launch.gameId) child.on('exit', (code) => opts.onExit!(code));
-    return { ok: true, via: install.method, gameId: launch.gameId, registered, registerError, exitTracked: Boolean(opts.onExit && launch.gameId), pid: child.pid };
+    return { ok: true, via: install.method, gameId: launch.gameId, registered, registerError, exitTracked: Boolean(opts.onExit && launch.gameId), pid: child.pid, started };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }

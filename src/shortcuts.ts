@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import * as faugus from './faugus';
+import { whenSpawned } from './fsutil';
 
 export interface ExeFile {
   name: string;
@@ -84,16 +85,12 @@ export interface LaunchResult {
   exitTracked?: boolean;
   /** Pid of the process we spawned (the game's windows descend from it). */
   pid?: number;
+  /** Windows: started through the UAC prompt (the game needs administrator rights). */
+  elevated?: boolean;
   /** What cloud-save sync did before launch (main fills this in). */
   cloud?: import('./cloudsaves').AutoAction;
 }
 
-/**
- * Launch a game executable. Windows runs it directly. On Linux a Windows
- * .exe is handed to Faugus Launcher (UMU/Proton) when it's installed and
- * enabled; otherwise the user is pointed at Add-to-Steam. macOS has no
- * Proton path, so .exe is always refused there.
- */
 /**
  * Windows: "the game has exited" is not "the process we spawned has exited" —
  * launcher stubs (Ubisoft Connect, EA app) return at once and start the real
@@ -101,9 +98,16 @@ export interface LaunchResult {
  * running from the game's install folder any more. `countRunning` is
  * injectable for tests; the default asks PowerShell.
  */
-export function countProcessesUnder(folder: string): Promise<number> {
-  const esc = folder.replace(/'/g, "''");
-  const ps = `(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -and $_.Path.StartsWith('${esc}', [System.StringComparison]::OrdinalIgnoreCase) } | Measure-Object).Count`;
+export function countProcessesUnder(folder: string, extraNames: string[] = []): Promise<number> {
+  // Trailing separator: "C:\Games\Halo" must not count a game running from "C:\Games\Halo 2".
+  const root = folder.replace(/[\\/]+$/, '') + '\\';
+  const esc = (s: string) => s.replace(/'/g, "''");
+  // An elevated game hides its Path from a non-elevated caller, so it is also
+  // matched by process name (only when the launch had to go through UAC).
+  const byName = extraNames.length
+    ? ` -or (-not $_.Path -and @(${extraNames.map((n) => `'${esc(n)}'`).join(',')}) -contains $_.ProcessName)`
+    : '';
+  const ps = `(Get-Process -ErrorAction SilentlyContinue | Where-Object { ($_.Path -and $_.Path.StartsWith('${esc(root)}', [System.StringComparison]::OrdinalIgnoreCase))${byName} } | Measure-Object).Count`;
   return new Promise((resolve) => {
     const r = spawn('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], { windowsHide: true });
     let out = '';
@@ -130,12 +134,38 @@ export function watchGameExit(
   setTimeout(tick, opts.firstDelayMs ?? 8_000).unref();
 }
 
-export function launchGame(
-  exePath: string,
-  opts: { faugusEnabled?: boolean; faugusPerGame?: boolean; title?: string; coverPng?: string; gameFolder?: string; onExit?: (code: number | null) => void } = {}
-): LaunchResult {
+export interface LaunchOptions {
+  faugusEnabled?: boolean;
+  faugusPerGame?: boolean;
+  title?: string;
+  coverPng?: string;
+  gameFolder?: string;
+  onExit?: (code: number | null) => void;
+  /**
+   * Windows: start a program that needs administrator rights. CreateProcess
+   * refuses those outright (ERROR_ELEVATION_REQUIRED, which Node reports as
+   * EACCES); the shell's own launcher shows the UAC prompt instead. Main
+   * passes Electron's shell.openPath. Resolves '' on success, else the error.
+   */
+  openElevated?: (exePath: string) => Promise<string>;
+  /** Tests: stand-in for child_process.spawn. */
+  spawnFn?: typeof spawn;
+}
+
+/**
+ * Launch a game executable. Windows runs it directly. On Linux a Windows
+ * .exe is handed to Faugus Launcher (UMU/Proton) when it's installed and
+ * enabled; otherwise the user is pointed at Add-to-Steam. macOS has no
+ * Proton path, so .exe is always refused there.
+ *
+ * Resolves only once the OS has started the process (or refused to), so a
+ * game that can't start is reported as an error — not as "Launching…" with
+ * R2SD minimized and nothing happening.
+ */
+export async function launchGame(exePath: string, opts: LaunchOptions = {}): Promise<LaunchResult> {
   if (!exePath || !fs.existsSync(exePath)) return { ok: false, error: 'Executable not found' };
   const isExe = exePath.toLowerCase().endsWith('.exe');
+  const name = path.basename(exePath);
 
   if (process.platform === 'linux' && isExe) {
     const install = opts.faugusEnabled === false ? null : faugus.findFaugus();
@@ -143,9 +173,10 @@ export function launchGame(
       const res = faugus.launchWithFaugus(exePath, install, undefined, {
         perGame: opts.faugusPerGame !== false, title: opts.title, coverPng: opts.coverPng, onExit: opts.onExit,
       });
-      return res.ok
-        ? { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId, faugusRegistered: res.registered, faugusRegisterError: res.registerError, exitTracked: res.exitTracked, pid: res.pid }
-        : { ok: false, error: `Faugus Launcher failed to start: ${res.error}` };
+      if (!res.ok) return { ok: false, error: `Faugus Launcher failed to start: ${res.error}` };
+      const err = res.started ? await res.started : null;
+      if (err) return { ok: false, error: `Faugus Launcher failed to start: ${err.message}` };
+      return { ok: true, via: 'faugus', faugusMethod: res.via, faugusGameId: res.gameId, faugusRegistered: res.registered, faugusRegisterError: res.registerError, exitTracked: res.exitTracked, pid: res.pid };
     }
     return {
       ok: false,
@@ -160,26 +191,44 @@ export function launchGame(
       error: 'Launching Windows games on this OS needs Proton/Wine. Use "Add to Steam" to run it through Proton.',
     };
   }
+  const folder = opts.gameFolder || path.dirname(exePath);
+  let child;
   try {
-    const child = spawn(exePath, [], {
+    child = (opts.spawnFn ?? spawn)(exePath, [], {
       cwd: path.dirname(exePath),
       detached: true,
       stdio: 'ignore',
       windowsHide: false,
     });
-    child.unref();
-    if (opts.onExit && process.platform === 'win32') {
-      let exited = false;
-      child.on('exit', () => { exited = true; });
-      child.on('error', () => { exited = true; });
-      const onExit = opts.onExit;
-      watchGameExit(opts.gameFolder || path.dirname(exePath), () => exited, () => onExit(null));
-      return { ok: true, exitTracked: true, pid: child.pid };
-    }
-    return { ok: true, pid: child.pid };
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : String(err) };
   }
+  let exited = false;
+  child.on('exit', () => { exited = true; });
+  const err = await whenSpawned(child);
+  if (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (process.platform === 'win32' && code === 'EACCES' && opts.openElevated) {
+      const msg = await opts.openElevated(exePath);
+      if (msg) return { ok: false, error: `${name} needs administrator rights and was not started: ${msg}` };
+      // No child of ours to watch; allow time for the UAC prompt, then follow the
+      // game by folder and (its Path being hidden when elevated) by name.
+      if (opts.onExit) {
+        const onExit = opts.onExit;
+        const exeName = name.replace(/\.exe$/i, '');
+        watchGameExit(folder, () => true, () => onExit(null), { firstDelayMs: 30_000, countRunning: (f) => countProcessesUnder(f, [exeName]) });
+      }
+      return { ok: true, elevated: true, exitTracked: Boolean(opts.onExit) };
+    }
+    return { ok: false, error: `Could not start ${name}: ${err.message}` };
+  }
+  child.unref();
+  if (opts.onExit && process.platform === 'win32') {
+    const onExit = opts.onExit;
+    watchGameExit(folder, () => exited, () => onExit(null));
+    return { ok: true, exitTracked: true, pid: child.pid };
+  }
+  return { ok: true, pid: child.pid };
 }
 
 function sanitizeName(name: string): string {
