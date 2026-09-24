@@ -212,7 +212,81 @@ function extractStagingDir(installPath: string, romId: number): string {
   return path.join(installPath, `.r2sd-extract-${romId}`);
 }
 
-const STAGING_DIR_RE = /^\.r2sd-extract-\d+$/;
+const STAGING_DIR_RE = /^\.r2sd-extract-(\d+)$/;
+
+// ── Free space ──────────────────────────────────────────────────────────
+// Checked before a download and again before extracting, so a full drive is
+// reported up front ("needs 40 GB, 12 GB free") instead of failing halfway
+// through and leaving gigabytes behind.
+
+/** Headroom kept free on top of what a download/extraction needs. */
+const SPACE_MARGIN = 256 * 1024 * 1024;
+
+type FreeSpaceProbe = (dir: string) => number | null;
+let freeSpaceProbeOverride: FreeSpaceProbe | null = null;
+/** Tests: pretend a folder has a given amount of free space. */
+export function setFreeSpaceProbeForTests(probe: FreeSpaceProbe | null): void { freeSpaceProbeOverride = probe; }
+
+/** Bytes this user may still write on the filesystem holding `dir` (null = can't tell). */
+function freeBytes(dir: string): number | null {
+  if (freeSpaceProbeOverride) return freeSpaceProbeOverride(dir);
+  try {
+    const s = fs.statfsSync(dir);
+    return Number(s.bavail) * Number(s.bsize);
+  } catch { return null; }
+}
+
+function sameFilesystem(a: string, b: string): boolean {
+  if (path.resolve(a) === path.resolve(b)) return true;
+  try { return fs.statSync(a).dev === fs.statSync(b).dev; } catch { return false; }
+}
+
+export function formatBytes(bytes: number): string {
+  const gb = bytes / 1024 ** 3;
+  return gb >= 1 ? `${gb.toFixed(1)} GB` : `${Math.max(1, Math.round(bytes / 1024 ** 2))} MB`;
+}
+
+/**
+ * Whether the drive(s) can take what is about to be written. `needs` lists
+ * bytes per folder; folders on the same filesystem are added together.
+ * Returns a user-facing message when something won't fit, otherwise null.
+ * An unknown free-space figure never blocks (network shares may not report it).
+ */
+export function spaceShortfall(needs: { dir: string; bytes: number; what: string }[]): string | null {
+  const groups: { dir: string; bytes: number; what: string[] }[] = [];
+  for (const n of needs) {
+    if (!n.dir || n.bytes <= 0) continue;
+    const g = groups.find((x) => sameFilesystem(x.dir, n.dir));
+    if (g) { g.bytes += n.bytes; g.what.push(n.what); } else groups.push({ dir: n.dir, bytes: n.bytes, what: [n.what] });
+  }
+  for (const g of groups) {
+    const free = freeBytes(g.dir);
+    if (free === null || free >= g.bytes + SPACE_MARGIN) continue;
+    return `Not enough free space in ${g.dir}: needs about ${formatBytes(g.bytes + SPACE_MARGIN)} ` +
+      `(${g.what.join(' + ')}), only ${formatBytes(free)} free`;
+  }
+  return null;
+}
+
+/** Total unpacked size of an archive from its headers (7za l -slt), or null. */
+function archiveUnpackedSize(archive: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    if (process.platform !== 'win32') {
+      try { fs.chmodSync(path7za, 0o755); } catch { /* read-only or already ok */ }
+    }
+    const proc = spawn(path7za, ['l', '-slt', archive], { windowsHide: true });
+    let out = '';
+    proc.stdout.on('data', (buf: Buffer) => { out += buf.toString(); });
+    proc.on('error', () => resolve(null));
+    proc.on('close', (code) => {
+      if (code !== 0) { resolve(null); return; }
+      // One "Size = N" per entry; the archive's own block uses "Physical Size".
+      let total = 0;
+      for (const m of out.matchAll(/^Size = (\d+)\s*$/gm)) total += Number(m[1]);
+      resolve(total);
+    });
+  });
+}
 
 function run7za(archive: string, dest: string, onPercent: (pct: number) => void): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -331,6 +405,8 @@ export async function startDownload(
   let is7z = false;
   let inlineExtracted = false;
   let userCancelled = false;
+  let spaceRefused = false;
+  let extracting = false; // download finished; the archive on disk is being unpacked
 
   const clearStaging = () => { if (staging) { try { fs.rmSync(staging, { recursive: true, force: true }); } catch { /* best effort */ } } };
 
@@ -379,6 +455,19 @@ export async function startDownload(
         partPath = filePath + '.part';
         isZip = fileName.toLowerCase().endsWith('.zip');
         is7z = fileName.toLowerCase().endsWith('.7z');
+
+        // Room for this? The archive needs whatever isn't downloaded yet, and
+        // an extracted game is essentially never smaller than its archive, so
+        // "archive + one archive's worth" is a floor for an extracting
+        // platform, not a guess. Checked before the first byte is written.
+        if (total > 0) {
+          const willExtract = extract && (isZip || is7z);
+          const shortfall = spaceShortfall([
+            { dir: archiveDir, bytes: total - (resumed ? resumeFrom : 0), what: 'download' },
+            ...(willExtract ? [{ dir: installPath, bytes: Math.floor(total * 0.98), what: 'extracted game' }] : []),
+          ]);
+          if (shortfall) { spaceRefused = true; controller.abort(); throw new Error(shortfall); }
+        }
 
         // Already fully downloaded and not an extraction run? Skip.
         if (!extract && fs.existsSync(filePath) && total > 0 && fs.statSync(filePath).size === total) {
@@ -448,6 +537,11 @@ export async function startDownload(
         // reads and disk writes overlap. (Awaiting every write's completion
         // callback serialized the two, making a download take roughly network
         // time PLUS disk time — noticeable on the Deck's SD card.)
+        // Write the resume note now, not only when an attempt fails: if the
+        // app or the machine dies mid-download, the .part stays resumable
+        // instead of becoming an orphan nothing ever cleans up.
+        try { fs.writeFileSync(resumeMetaPath, JSON.stringify({ fileName, etag, partPath })); } catch { /* best effort */ }
+
         const out = fs.createWriteStream(partPath, resumed ? { flags: 'a' } : undefined);
         let outError: Error | null = null;
         out.on('error', (e) => { outError = e; });
@@ -522,6 +616,8 @@ export async function startDownload(
         fs.renameSync(partPath, filePath);
         pumped = true;
       } catch (err) {
+        // Not enough space: retrying won't help, and it isn't a cancel.
+        if (spaceRefused) throw err;
         // User cancel (abort without the stall flag) propagates immediately.
         if (controller.signal.aborted && !controller.stalled) { userCancelled = true; throw err; }
         // Keep the partial + ETag so the next attempt (or a later manual
@@ -563,10 +659,18 @@ export async function startDownload(
       return;
     }
 
+    extracting = true;
     if (!inlineExtracted) {
       // Fallback (or 7z): extract the on-disk archive with bundled 7za
       emit({ status: 'extracting', percent: 0 });
       clearStaging();
+      // Now the archive is here we know its real unpacked size — check it
+      // fits rather than letting 7za fill the drive and fail near the end.
+      const unpacked = await archiveUnpackedSize(filePath);
+      if (unpacked) {
+        const shortfall = spaceShortfall([{ dir: installPath, bytes: unpacked, what: 'extracted game' }]);
+        if (shortfall) throw new Error(shortfall);
+      }
       fs.mkdirSync(staging, { recursive: true });
       await run7za(filePath, staging, (pct) => emit({ status: 'extracting', percent: pct }));
     }
@@ -582,6 +686,13 @@ export async function startDownload(
     // Whatever happened, half-extracted content in the staging folder is junk:
     // a retry re-extracts from the archive, a cancel discards everything.
     clearStaging();
+    // A failed extraction also leaves the complete archive behind — untracked,
+    // so nothing would ever remove it, and every retry on a nearly full drive
+    // added another one. Remove it; downloading again fetches a fresh copy.
+    let archiveNote = '';
+    if (extracting && filePath && fs.existsSync(filePath)) {
+      try { fs.unlinkSync(filePath); archiveNote = ' — the downloaded archive was removed'; } catch { /* best effort */ }
+    }
     if (userCancelled) {
       // User cancelled: throw everything away, including the resume state
       try { fs.unlinkSync(resumeMetaPath); } catch { /* absent */ }
@@ -600,7 +711,7 @@ export async function startDownload(
           if (pct > 0) saved = ` — ${pct}% saved; downloading again will resume from there`;
         }
       } catch { /* best effort */ }
-      emit({ status: 'error', message: base + saved });
+      emit({ status: 'error', message: base + saved + archiveNote });
     }
   } finally {
     activeDownloads.delete(rom.id);
@@ -649,6 +760,7 @@ export function deleteDownload(romId: number): { deleted: string[]; error?: stri
  *  - drop records whose files vanished
  *  - adopt files in the platform folder matching a rom's fs_name
  *  - adopt folders in install paths matching a rom's (sanitized) name
+ *  - delete abandoned `.r2sd-extract-<romId>` folders (no download running)
  *
  * All changes are applied to one in-memory list and written once at the end
  * (each adopt/drop used to re-read and rewrite downloads.json).
@@ -698,7 +810,17 @@ export function syncPlatform(
   for (const installPath of setup.installPaths) {
     if (!installPath || !fs.existsSync(installPath)) continue;
     for (const item of fs.readdirSync(installPath)) {
-      if (STAGING_DIR_RE.test(item)) continue; // an in-progress or abandoned extraction
+      const staged = STAGING_DIR_RE.exec(item);
+      if (staged) {
+        // Our own private extraction folder. With no download of that game
+        // running it was abandoned (app killed, machine crashed mid-extract):
+        // half a game that would otherwise sit there, hidden, forever.
+        const romId = Number(staged[1]);
+        if (!activeDownloads.has(romId) && activeItem?.rom.id !== romId) {
+          try { fs.rmSync(path.join(installPath, item), { recursive: true, force: true }); } catch { /* retry next sync */ }
+        }
+        continue;
+      }
       const full = path.join(installPath, item);
       if (!fs.statSync(full).isDirectory()) continue;
       const rom = byCleanName.get(sanitizeForMatch(item));

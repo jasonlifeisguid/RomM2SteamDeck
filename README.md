@@ -76,7 +76,7 @@ Any configured folder is protected: the app will refuse to delete it even if a g
 - **Search**, **genre filter**, and **sort** (name / date added / size / release year / rating / installed first, ascending or descending) at the top; toggle between grid and list views.
 - The **✓ Installed** toolbar button filters to games you have on disk — it stacks with search, genre and sort, and while it's on the sidebar counts show installed games per platform (platforms with none fade). The choice is remembered, so on the Deck it makes a handy "what can I play" view.
 - Click a game for details, cover, screenshots and the download button. Right-click (or the hover buttons on a tile) for quick actions.
-- Downloads run one at a time through a queue; the bar at the bottom shows progress and lets you cancel or drop queued items. Interrupted downloads **resume** where they stopped, even after restarting the app.
+- Downloads run one at a time through a queue; the bar at the bottom shows progress and lets you cancel or drop queued items. Interrupted downloads **resume** where they stopped, even after restarting the app. Before downloading, R2SD checks there's room for the archive *and* the extracted game, and before unpacking it checks the archive's real size — a full drive is reported up front ("needs 40 GB, 12 GB free") instead of failing halfway. A failed extraction cleans up after itself, including the archive, and half-extracted leftovers from a crash are removed the next time you open the platform.
 - The library is cached locally and refreshed in the background, so opening a platform is instant after the first load. If a background refresh fails (bad login, server down) the sidebar tells you instead of spinning forever.
 
 ### Controller navigation

@@ -219,10 +219,10 @@ test('empty body is reported as an error, not retried forever', async () => {
   assert.equal(fs.existsSync(path.join(t.install, '.r2sd-extract-16')), false);
 });
 
-test('syncPlatform adopts folders, ignores staging dirs, and writes once', async () => {
+test('syncPlatform adopts folders, sweeps abandoned staging dirs, and writes once', async () => {
   const t = makeTemp();
   fs.mkdirSync(path.join(t.install, 'Sonic Mania'));
-  fs.mkdirSync(path.join(t.install, '.r2sd-extract-99'));
+  fs.mkdirSync(path.join(t.install, '.r2sd-extract-99', 'Half A Game'), { recursive: true });
   fs.mkdirSync(path.join(t.install, 'Unrelated'));
   const res = downloads.syncPlatform(PLATFORM_ID, [
     { id: 31, name: 'Sonic Mania', fsName: 'sonic.zip' },
@@ -231,10 +231,107 @@ test('syncPlatform adopts folders, ignores staging dirs, and writes once', async
   assert.deepEqual(res, { added: 1, removed: 0, moved: 0 });
   assert.equal(downloads.findDownload(31).filePath, path.join(t.install, 'Sonic Mania'));
   assert.equal(downloads.findDownload(32), undefined);
+  assert.equal(fs.existsSync(path.join(t.install, '.r2sd-extract-99')), false, 'abandoned extraction swept');
+  assert.ok(fs.existsSync(path.join(t.install, 'Unrelated')), 'nothing else touched');
   // Stale record → removed on the next sync
   fs.rmSync(path.join(t.install, 'Sonic Mania'), { recursive: true });
   assert.deepEqual(downloads.syncPlatform(PLATFORM_ID, []), { added: 0, removed: 1, moved: 0 });
   assert.equal(downloads.findDownload(31), undefined);
+});
+
+// ── Free space + leftovers (2.2.29) ────────────────────────────────────────
+
+const MB = 1024 * 1024;
+const MARGIN = 256 * MB; // SPACE_MARGIN in downloads.ts
+
+test('not enough space: refused before a single byte is written', async (t2) => {
+  const t = makeTemp();
+  t2.after(() => downloads.setFreeSpaceProbeForTests(null));
+  const zip = makeArchive(t.root, 'big.zip', { 'G/game.exe': 'MZ' }, 'zip');
+  downloads.setFreeSpaceProbeForTests(() => 10 * MB);
+  const events = await run(stubClient(zip, 'big.zip'), rom(41, 'Big', 'big.zip'));
+  const last = events.at(-1);
+  assert.equal(last.status, 'error');
+  assert.match(last.message, /Not enough free space in .*download \+ extracted game.*only 10 MB free/);
+  assert.equal(events.filter((e) => /retrying/.test(e.message || '')).length, 0, 'a full drive is not retried');
+  assert.deepEqual(fs.readdirSync(t.install), [], 'no .part, no resume note, no staging dir');
+  assert.equal(downloads.findDownload(41), undefined);
+});
+
+test('unknown free space (e.g. a share that does not report it) never blocks', async (t2) => {
+  const t = makeTemp();
+  t2.after(() => downloads.setFreeSpaceProbeForTests(null));
+  const zip = makeArchive(t.root, 'share.zip', { 'S/s.exe': 'MZ' }, 'zip');
+  downloads.setFreeSpaceProbeForTests(() => null);
+  const events = await run(stubClient(zip, 'share.zip'), rom(42, 'Share', 'share.zip'));
+  assert.equal(events.at(-1).status, 'extracted');
+});
+
+test('archive that unpacks bigger than the free space: refused before 7za, archive removed', async (t2) => {
+  const t = makeTemp();
+  t2.after(() => downloads.setFreeSpaceProbeForTests(null));
+  // ~8 MB of zeros compresses to a few KB: the pre-download floor passes,
+  // the real unpacked size (read from the 7z headers) does not.
+  const sz = makeArchive(t.root, 'bomb.7z', { 'a.bin': Buffer.alloc(8 * MB) }, '7z');
+  assert.ok(fs.statSync(sz).size < MB);
+  downloads.setFreeSpaceProbeForTests(() => MARGIN + 2 * MB);
+  const events = await run(stubClient(sz, 'bomb.7z'), rom(43, 'Bomb', 'bomb.7z'));
+  const last = events.at(-1);
+  assert.equal(last.status, 'error', JSON.stringify(last));
+  assert.match(last.message, /Not enough free space.*extracted game.*archive was removed/);
+  assert.deepEqual(fs.readdirSync(t.install), [], 'archive, staging dir and resume note all gone');
+  assert.equal(downloads.findDownload(43), undefined);
+});
+
+test('a failed extraction does not leave the archive behind', async () => {
+  const t = makeTemp();
+  const bad = path.join(t.root, 'broken.7z');
+  fs.writeFileSync(bad, Buffer.concat([Buffer.from('377abcaf271c', 'hex'), Buffer.alloc(4096, 1)]));
+  const events = await run(stubClient(bad, 'broken.7z'), rom(44, 'Broken', 'broken.7z'));
+  const last = events.at(-1);
+  assert.equal(last.status, 'error', JSON.stringify(last));
+  assert.match(last.message, /archive was removed/);
+  assert.deepEqual(fs.readdirSync(t.install), []);
+});
+
+/** A download that sends `head` bytes, then stalls until cancelled. */
+function hangingClient(fileName, head, total) {
+  return {
+    openDownloadStream: async (_romId, _fsName, signal) => new Response(new ReadableStream({
+      start(c) {
+        c.enqueue(head);
+        signal?.addEventListener('abort', () => c.error(new Error('aborted')));
+      },
+      pull() { return new Promise(() => {}); },
+    }), {
+      status: 200,
+      headers: { 'content-length': String(total), 'content-disposition': `attachment; filename="${fileName}"`, etag: '"e1"' },
+    }),
+  };
+}
+
+test('mid-download: resume note already on disk, and sync leaves the live staging dir alone', async () => {
+  const t = makeTemp();
+  const events = [];
+  const done = downloads.startDownload(hangingClient('live.zip', Buffer.alloc(64 * 1024, 1), 10 * MB),
+    rom(45, 'Live', 'live.zip'), '', (e) => events.push(e));
+  const until = async (pred) => { for (let i = 0; i < 200 && !pred(); i++) await new Promise((r) => setTimeout(r, 10)); };
+  await until(() => fs.existsSync(path.join(t.install, 'live.zip.part')));
+
+  // A crash right now would leave a resumable download, not an orphan .part
+  const note = JSON.parse(fs.readFileSync(path.join(t.install, '.r2sd-resume-45.json'), 'utf-8'));
+  assert.equal(note.partPath, path.join(t.install, 'live.zip.part'));
+  assert.equal(note.etag, '"e1"');
+
+  // The inline extractor's staging dir belongs to a running download: keep it
+  assert.ok(fs.existsSync(path.join(t.install, '.r2sd-extract-45')));
+  downloads.syncPlatform(PLATFORM_ID, []);
+  assert.ok(fs.existsSync(path.join(t.install, '.r2sd-extract-45')), 'active download untouched by the sweep');
+
+  assert.equal(downloads.cancelDownload(45), true);
+  await done;
+  assert.equal(events.at(-1).status, 'cancelled');
+  assert.deepEqual(fs.readdirSync(t.install), [], 'cancel removes part, note and staging');
 });
 
 test('fs error inside the parser entry handler does not hang or crash (PR #5 case)', async () => {
