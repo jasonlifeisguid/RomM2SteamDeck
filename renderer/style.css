@@ -757,3 +757,14 @@ button.danger:hover { border-color: #f87171; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 5px; }
 ::-webkit-scrollbar-thumb:hover { background: var(--accent); }
+/* Cloud save history */
+.history-list { max-height: 50vh; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 10px; }
+.history-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-bottom: 1px solid var(--border); font-size: 0.85rem; }
+.history-row:last-child { border-bottom: none; }
+.history-row .when { font-weight: 600; }
+.history-row .meta { color: var(--text-muted); font-size: 0.78rem; }
+.history-row .info { flex: 1; min-width: 0; }
+.history-row .tag { display: inline-block; font-size: 0.7rem; padding: 1px 6px; border-radius: 999px; margin-left: 6px; border: 1px solid var(--border); color: var(--text-muted); }
+.history-row .tag.latest { color: var(--accent); border-color: var(--accent); }
+.history-row .tag.here { color: #4ade80; border-color: #4ade80; }
+.history-empty { padding: 12px; color: var(--text-muted); font-size: 0.85rem; }

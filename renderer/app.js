@@ -1334,6 +1334,7 @@ async function openFoldersModal(rom) {
         if (res.error) toast(res.error, 'error'); else toast('Saves restored from RomM', 'success');
         await refreshCloud();
       });
+      cmk('History…', 'The versions RomM keeps (the last 5) — restore an older one', () => openHistoryModal(rom, root, refreshCloud));
       g.appendChild(cloudActions);
       refreshCloud();
     }
@@ -1353,6 +1354,70 @@ async function openFoldersModal(rom) {
   }
 }
 function closeFoldersModal() { $('folders-modal').hidden = true; foldersRom = null; }
+
+// ── Cloud save history modal ────────────────────────────
+
+let historyCtx = null;
+async function openHistoryModal(rom, root, onChanged) {
+  historyCtx = { rom, root, onChanged };
+  $('history-game').textContent = `${rom.name || rom.fs_name} — ${root}`;
+  $('history-list').innerHTML = '<div class="history-empty">Asking RomM…</div>';
+  $('history-modal').hidden = false;
+  await renderHistory();
+}
+async function renderHistory() {
+  if (!historyCtx) return;
+  const { rom, root } = historyCtx;
+  const res = await window.r2sd.cloudHistory(rom.id, root);
+  if (!historyCtx || historyCtx.rom.id !== rom.id) return;
+  const list = $('history-list');
+  list.innerHTML = '';
+  const empty = (text) => { const d = document.createElement('div'); d.className = 'history-empty'; d.textContent = text; list.appendChild(d); };
+  if (!res.ok) { empty(`RomM: ${res.error}`); return; }
+  if (!res.versions.length) { empty('No saves for this game on RomM yet.'); return; }
+  for (const v of res.versions) {
+    const row = document.createElement('div');
+    row.className = 'history-row';
+    const info = document.createElement('div');
+    info.className = 'info';
+    const when = document.createElement('div');
+    when.className = 'when';
+    const label = new Date(v.createdAt).toLocaleString();
+    when.textContent = label;
+    const tag = (text, cls) => { const t = document.createElement('span'); t.className = `tag ${cls}`; t.textContent = text; when.appendChild(t); };
+    if (v.latest) tag('Latest', 'latest');
+    if (v.current) tag('On this device', 'here');
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    meta.textContent = [v.fromDevice ? `from ${v.fromDevice}` : 'from an unknown device', formatSize(v.size)].join(' · ');
+    info.append(when, meta);
+    const btn = document.createElement('button');
+    btn.className = 'secondary';
+    btn.textContent = 'Restore';
+    // The newest version that is also what's here already: nothing to do
+    btn.disabled = v.latest && v.current;
+    btn.title = btn.disabled ? 'Already the current save here and on RomM' : 'Put this version back here, and make it the newest on RomM';
+    btn.addEventListener('click', async () => {
+      btn.disabled = true;
+      try {
+        const r = await window.r2sd.cloudRestoreVersion(rom.id, root, v.saveId, label);
+        if (r.cancelled) return;
+        if (r.error) {
+          toast(r.error, 'error');
+        } else {
+          const actions = [{ label: 'OK' }];
+          if (r.backup) actions.unshift({ label: 'Show backup', fn: () => window.r2sd.showSaveBackup(r.backup) });
+          stickyToast(`Restored the save from ${label}${r.reuploaded ? ' — it is now the newest on RomM' : ''}.${r.backup ? ' Your previous saves were backed up first.' : ''}`, actions, 'success');
+        }
+        await renderHistory();
+        historyCtx?.onChanged?.();
+      } finally { btn.disabled = false; }
+    });
+    row.append(info, btn);
+    list.appendChild(row);
+  }
+}
+function closeHistoryModal() { $('history-modal').hidden = true; historyCtx = null; }
 
 // ── What syncs modal ────────────────────────────────────
 
@@ -1788,9 +1853,15 @@ function gpOpenMenuItems() {
   return open ? [...open.querySelectorAll('.dropdown-item')].filter(gpVisible) : [];
 }
 
+/** The window on top. Windows stack (History over Saves & Folders over a
+ *  game's details); the first open one in page order is often the one
+ *  underneath, which left the d-pad driving a window you couldn't see. */
 function gpOpenModalCard() {
-  const modal = [...document.querySelectorAll('.modal')].find((m) => !m.hidden);
-  return modal ? modal.querySelector('.modal-card') : null;
+  for (const [id] of MODAL_LAYERS) {
+    const m = $(id);
+    if (m && !m.hidden) return m.querySelector('.modal-card');
+  }
+  return null;
 }
 
 /** Everything clickable/typable in the open modal, in reading order. */
@@ -1922,6 +1993,7 @@ function anyModalOpen() {
  * top-most first; returns false when nothing was open.
  */
 const MODAL_LAYERS = [
+  ['history-modal', () => closeHistoryModal()],
   ['syncs-modal', () => closeSyncsModal()],
   ['exe-modal', () => closeExePicker()],
   ['folders-modal', () => closeFoldersModal()],
@@ -2174,6 +2246,8 @@ $('btn-folders').addEventListener('click', () => state.detailRom && openFoldersM
 $('folders-close').addEventListener('click', closeFoldersModal);
 $('folders-backdrop').addEventListener('click', closeFoldersModal);
 $('syncs-close').addEventListener('click', closeSyncsModal);
+$('history-close').addEventListener('click', closeHistoryModal);
+$('history-backdrop').addEventListener('click', closeHistoryModal);
 $('syncs-backdrop').addEventListener('click', closeSyncsModal);
 $('syncs-include').addEventListener('change', async (e) => {
   if (!syncsCtx) return;

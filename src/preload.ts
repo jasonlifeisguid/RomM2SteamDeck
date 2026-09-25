@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld('r2sd', {
   cloudStatus: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:status', romId, prefixRoot),
   cloudUpload: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:upload', romId, prefixRoot),
   cloudDownload: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:download', romId, prefixRoot),
+  cloudHistory: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:history', romId, prefixRoot),
+  cloudRestoreVersion: (romId: number, prefixRoot: string, saveId: number, label: string) =>
+    ipcRenderer.invoke('cloud:restoreVersion', romId, prefixRoot, saveId, label),
+  showSaveBackup: (file: string) => ipcRenderer.invoke('saves:showBackup', file),
   savesPreview: (romId: number, prefixRoot: string) => ipcRenderer.invoke('saves:preview', romId, prefixRoot),
   setIncludeConfig: (romId: number, include: boolean) => ipcRenderer.invoke('saves:setIncludeConfig', romId, include),
   setSaveExcludes: (patterns: string[] | null) => ipcRenderer.invoke('saves:setExcludes', patterns),

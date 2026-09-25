@@ -83,16 +83,19 @@ export function computeState(local: saves.SaveListing | null, remote: RommSave |
   return { state: 'conflict', fingerprint: fp };
 }
 
-/** Device id → name, cached briefly (one list request per status burst). */
-const deviceNames = new Map<RommClient, { at: number; names: Map<string, string> }>();
+/** Device id → name, cached briefly per server (one list request per status
+ *  burst). Keyed by server, not by client object: main makes a new client for
+ *  every call, so an object key never hit and the map only grew. */
+const deviceNames = new Map<string, { at: number; names: Map<string, string> }>();
 async function deviceName(client: RommClient, id: string | null | undefined): Promise<string | null> {
   if (!id) return null;
-  let cached = deviceNames.get(client);
+  const key = client.server ?? '';
+  let cached = deviceNames.get(key);
   if (!cached || Date.now() - cached.at > 5 * 60_000) {
     const names = new Map<string, string>();
     if (typeof client.listDevices === 'function') for (const d of await client.listDevices()) names.set(d.id, d.name);
     cached = { at: Date.now(), names };
-    deviceNames.set(client, cached);
+    deviceNames.set(key, cached);
   }
   return cached.names.get(id) ?? id;
 }
@@ -122,9 +125,7 @@ export async function upload(deps: CloudDeps, romId: number, target: saves.SaveT
   try {
     const z = await saves.zipSaves(target, file, rulesOf(deps));
     if (!z.ok || !z.listing) return { ok: false, error: z.error };
-    const save = await deps.client.uploadSave(romId, path.basename(file), fs.readFileSync(file), {
-      emulator: CLOUD_EMULATOR, slot: CLOUD_SLOT, deviceId: deps.deviceId || undefined, autocleanupLimit: KEEP_VERSIONS,
-    });
+    const save = await uploadAsNewest(deps, romId, file, gameName, 'uploaded');
     deps.setRecord({ saveId: save.id, contentHash: (hashOf(save) || saves.md5File(file)), fingerprint: saves.fingerprint(z.listing), syncedAt: Date.now() });
     return { ok: true, saveId: save.id, files: z.files, bytes: z.bytes, excludedConfig: z.excludedConfig };
   } catch (err) {
@@ -155,6 +156,143 @@ export async function download(deps: CloudDeps, romId: number, target: saves.Sav
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }
+}
+
+// ── Version history ─────────────────────────────────────────────────────────
+// RomM keeps the last KEEP_VERSIONS uploads per game. They are only useful if
+// one can be brought back: after a sync that went the wrong way, or to undo a
+// bad save.
+
+export interface CloudVersion {
+  saveId: number;
+  createdAt: string;
+  size: number;
+  fromDevice: string | null;
+  contentHash: string | null;
+  /** The newest version — what every device restores before Play. */
+  latest: boolean;
+  /** What this device last synced (its record's content hash). */
+  current: boolean;
+}
+
+/** R2SD's versions of this game's saves on RomM, newest first. */
+export async function history(deps: CloudDeps, romId: number): Promise<CloudVersion[]> {
+  const all = (await deps.client.listSaves(romId)).filter((s) => s.slot === CLOUD_SLOT);
+  all.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at) || b.id - a.id);
+  const rec = deps.getRecord();
+  const out: CloudVersion[] = [];
+  for (const [i, s] of all.entries()) {
+    const hash = hashOf(s);
+    out.push({
+      saveId: s.id, createdAt: s.created_at, size: s.file_size_bytes, contentHash: hash, latest: i === 0,
+      fromDevice: s.device_syncs?.find((d) => d.device_id === s.origin_device_id)?.device_name ?? await deviceName(deps.client, s.origin_device_id),
+      current: !!rec && !!hash && rec.contentHash.toLowerCase() === hash,
+    });
+  }
+  return out;
+}
+
+/**
+ * Make an older version the current one: restore it here, then (unless it
+ * already is the newest) upload it again as the newest version. Restoring it
+ * locally alone would not stick — the next Play would see "RomM is newer" and
+ * put the latest back. Before anything is overwritten, this device's current
+ * saves are zipped to `backupDir` (kept there, never uploaded).
+ */
+export async function restoreVersion(
+  deps: CloudDeps, romId: number, target: saves.SaveTarget, saveId: number, gameName: string, backupDir: string,
+): Promise<SyncResult & { backup?: string; reuploaded?: boolean }> {
+  const tmp = fs.mkdtempSync(path.join(deps.tmpDir || os.tmpdir(), 'r2sd-cloud-'));
+  try {
+    const versions = (await deps.client.listSaves(romId)).filter((s) => s.slot === CLOUD_SLOT);
+    const pick = versions.find((s) => s.id === saveId);
+    if (!pick) return { ok: false, error: 'That version is no longer on RomM (it keeps the last 5)' };
+    const newest = versions.reduce((a, b) => (Date.parse(b.created_at) > Date.parse(a.created_at) || (b.created_at === a.created_at && b.id > a.id) ? b : a));
+
+    // Fetch first: if the download fails, nothing here has been touched.
+    const content = await deps.client.downloadSave(pick.id, deps.deviceId || undefined);
+    const file = path.join(tmp, saves.backupFileName(gameName));
+    fs.writeFileSync(file, content);
+
+    // Safety copy of what is here now
+    let backup: string | undefined;
+    const local = saves.listSaveFiles(target, rulesOf(deps));
+    if (local && local.included.length) {
+      fs.mkdirSync(backupDir, { recursive: true });
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+      const z = await saves.zipSaves(target, path.join(backupDir, `${saves.backupFileName(gameName).replace(/\.zip$/, '')} before restore ${stamp}.zip`), rulesOf(deps));
+      if (!z.ok) return { ok: false, error: `Could not back up the current saves first, so nothing was changed: ${z.error}` };
+      backup = z.file;
+      pruneBackups(backupDir, gameName, 5);
+    }
+
+    const r = await saves.restoreSaves(target, file, { createProfile: true, scope: rulesOf(deps).scope });
+    if (!r.ok) return { ok: false, error: r.error, backup };
+    if (r.entries && deps.onRestored) { try { deps.onRestored(r.entries); } catch { /* learning is best effort */ } }
+
+    let record = pick;
+    let reuploaded = false;
+    if (pick.id !== newest.id) {
+      // Its files are exactly an existing version's, which RomM would hand back
+      // unchanged — so this upload always carries the version marker.
+      record = await uploadAsNewest(deps, romId, file, gameName, `restored from the version of ${pick.created_at}`, true);
+      reuploaded = true;
+    } else if (deps.deviceId) {
+      try { await deps.client.confirmSaveDownloaded(pick.id, deps.deviceId); } catch { /* best effort */ }
+    }
+    const listing = saves.listSaveFiles(target, rulesOf(deps));
+    deps.setRecord({ saveId: record.id, contentHash: hashOf(record) || saves.md5File(file), fingerprint: listing ? saves.fingerprint(listing) : '', syncedAt: Date.now() });
+    return { ok: true, saveId: record.id, bytes: content.length, backup, reuploaded };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
+/**
+ * Upload a save zip and make sure it ends up as the NEWEST version. RomM keeps
+ * one record per content hash (computed over the files inside the zip): saves
+ * identical to the latest simply come back as the latest — fine, no duplicate
+ * versions — but saves identical to an OLDER version come back as that old
+ * record, and the next Play elsewhere would then restore "latest" over them.
+ * In that case (or when asked up front) the zip gets the version marker, which
+ * makes its contents unique, and is uploaded again.
+ */
+async function uploadAsNewest(deps: CloudDeps, romId: number, file: string, gameName: string, what: string, markFirst = false): Promise<RommSave> {
+  const note = `R2SD · ${gameName} · ${what} · ${new Date().toISOString()}`;
+  const mark = async () => { const m = await saves.addVersionMarker(file, note); if (!m.ok) throw new Error(m.error); };
+  const put = () => deps.client.uploadSave(romId, path.basename(file), fs.readFileSync(file), {
+    emulator: CLOUD_EMULATOR, slot: CLOUD_SLOT, deviceId: deps.deviceId || undefined, autocleanupLimit: KEEP_VERSIONS,
+  });
+  if (markFirst) await mark();
+  let save = await put();
+  let newest = await latestRemote(deps.client, romId);
+  if (!markFirst && newest && newest.save.id !== save.id) {
+    // RomM matched an older version. If the latest holds exactly these files
+    // (it carries a marker, so RomM's hash can't see that), nothing needs to
+    // change: this IS the latest. Otherwise make it a new version.
+    const ours = await saves.zipContentKey(file);
+    const latestZip = `${file}.latest`;
+    fs.writeFileSync(latestZip, await deps.client.downloadSave(newest.save.id));
+    const theirs = await saves.zipContentKey(latestZip);
+    fs.rmSync(latestZip, { force: true });
+    if (ours !== null && ours === theirs) return newest.save;
+    await mark();
+    save = await put();
+    newest = await latestRemote(deps.client, romId);
+  }
+  if (newest && newest.save.id !== save.id) throw new Error('RomM did not store this save as the newest version');
+  return save;
+}
+
+/** Keep only the newest `keep` pre-restore backups of one game. */
+function pruneBackups(dir: string, gameName: string, keep: number): void {
+  const stem = saves.backupFileName(gameName).replace(/ saves \d{4}-\d{2}-\d{2}\.zip$/, '');
+  try {
+    const mine = fs.readdirSync(dir).filter((f) => f.startsWith(`${stem} saves `) && f.includes(' before restore ') && f.endsWith('.zip')).sort();
+    for (const f of mine.slice(0, Math.max(0, mine.length - keep))) fs.rmSync(path.join(dir, f), { force: true });
+  } catch { /* best effort */ }
 }
 
 export type AutoAction = { action: 'none' | 'restored' | 'uploaded' | 'seeded' | 'unscoped'; from?: string | null; at?: string } | { action: 'conflict' } | { action: 'error'; error: string };

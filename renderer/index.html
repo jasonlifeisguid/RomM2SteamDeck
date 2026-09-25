@@ -221,6 +221,21 @@
     </div>
   </div>
 
+  <!-- Cloud save history: the versions RomM keeps, and bringing an older one back -->
+  <div id="history-modal" class="modal" hidden>
+    <div class="modal-backdrop" id="history-backdrop"></div>
+    <div class="modal-card exe-card">
+      <h2>Save history on RomM</h2>
+      <p class="small muted mb-10" id="history-game"></p>
+      <p class="small mb-10">Restoring a version replaces the saves here and makes it the newest on RomM, so your other devices get it too. Your current saves are backed up first.</p>
+      <div id="history-list" class="history-list"></div>
+      <div class="modal-actions">
+        <span class="spacer"></span>
+        <button id="history-close" class="secondary">Close</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Install-path picker (shown on download when a platform has multiple paths) -->
   <div id="installpath-modal" class="modal" hidden>
     <div class="modal-backdrop" id="installpath-backdrop"></div>

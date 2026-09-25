@@ -815,6 +815,35 @@ function registerIpc(): void {
     if (confirm.response !== 0) return { ok: false, cancelled: true };
     return cloud.download(await cloudDeps(romId), romId, tgt);
   });
+  // Version history: the versions RomM keeps, and bringing an older one back
+  ipcMain.handle('cloud:history', async (_e, romId: number, prefixRoot: string) => {
+    if (!targetFor(romId, prefixRoot)) return { ok: false, error: 'Not a prefix of this game' };
+    if (!config.isConfigured()) return { ok: false, error: 'Not connected to RomM' };
+    try { return { ok: true, versions: await cloud.history(await cloudDeps(romId), romId) }; }
+    catch (err) { return { ok: false, error: err instanceof Error ? err.message : String(err) }; }
+  });
+  ipcMain.handle('cloud:restoreVersion', async (_e, romId: number, prefixRoot: string, saveId: number, label: string) => {
+    const tgt = targetFor(romId, prefixRoot);
+    if (!tgt) return { ok: false, error: 'Not a prefix of this game' };
+    if (!Number.isInteger(saveId)) return { ok: false, error: 'No such version' };
+    const confirm = await dialog.showMessageBox(mainWindow!, {
+      type: 'warning', buttons: ['Restore this version', 'Cancel'], defaultId: 1, cancelId: 1,
+      message: `Restore the save from ${String(label || 'this version')}?`,
+      detail: `It replaces same-named files in\n${rootOf(tgt)}\nand becomes the newest version on RomM, so your other devices get it too.\n\n`
+        + 'Your current saves here are zipped first, so this can be undone.',
+    });
+    if (confirm.response !== 0) return { ok: false, cancelled: true };
+    const rec = downloads.findDownload(romId);
+    return cloud.restoreVersion(await cloudDeps(romId), romId, tgt, saveId, rec?.romName || 'game', path.join(app.getPath('userData'), 'save-backups'));
+  });
+  ipcMain.handle('saves:showBackup', (_e, file: string) => {
+    // Only files R2SD itself wrote before a restore
+    const dir = path.join(app.getPath('userData'), 'save-backups');
+    if (typeof file !== 'string' || !isInsideFolder(dir, file) || !fs.existsSync(file)) return false;
+    shell.showItemInFolder(file);
+    return true;
+  });
+
   // What would be backed up / synced from this prefix, and what's excluded and why
   ipcMain.handle('saves:preview', (_e, romId: number, prefixRoot: string) => {
     const tgt = targetFor(romId, prefixRoot);

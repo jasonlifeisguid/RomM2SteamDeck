@@ -418,7 +418,7 @@ export async function restoreSaves(target: SaveTarget, zipFile: string, opts: { 
     layout = prefixLayout(target);
   }
   if (!layout) return { ok: false, error: 'No Windows user profile in this prefix yet (run the game once first, then restore)' };
-  const entries = await listZipEntries(zipFile);
+  const entries = (await listZipEntries(zipFile))?.filter((e) => e.split('/').pop() !== VERSION_MARKER) ?? null;
   if (!entries || !entries.length) return { ok: false, error: 'Not a readable zip' };
   const tops = new Set(entries.map((e) => e.split('/')[0]));
   const allowed = new Set(SAVE_FOLDERS.map((f) => f.split('/')[0]));
@@ -438,7 +438,7 @@ export async function restoreSaves(target: SaveTarget, zipFile: string, opts: { 
     if (!wanted.length) return { ok: false, error: 'Nothing in this backup is inside the game\'s save locations — set them in "What syncs…"' };
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-restore-'));
     try {
-      const r = await run7za(['x', '-y', '-aoa', `-o${tmp}`, zipFile]);
+      const r = await run7za(['x', '-y', '-aoa', `-xr!${VERSION_MARKER}`, `-o${tmp}`, zipFile]);
       if (r.code !== 0) return { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
       const topsByLength = Object.keys(layout.roots).sort((a, b) => b.length - a.length);
       for (const rel of wanted) {
@@ -456,13 +456,13 @@ export async function restoreSaves(target: SaveTarget, zipFile: string, opts: { 
     return { ok: true, folders: [...new Set(wanted.map((e) => e.split('/')[0]))], entries: wanted, skipped };
   }
   if (layout.direct) {
-    const r = await run7za(['x', '-y', '-aoa', `-o${layout.profile}`, zipFile]);
+    const r = await run7za(['x', '-y', '-aoa', `-xr!${VERSION_MARKER}`, `-o${layout.profile}`, zipFile]);
     if (r.code !== 0) return { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
   } else {
     // Redirected folders: extract to a temp dir, then copy each save root to where it really lives.
     const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-restore-'));
     try {
-      const r = await run7za(['x', '-y', '-aoa', `-o${tmp}`, zipFile]);
+      const r = await run7za(['x', '-y', '-aoa', `-xr!${VERSION_MARKER}`, `-o${tmp}`, zipFile]);
       if (r.code !== 0) return { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
       // Longest tops first so "AppData/Roaming" is moved before "AppData" could be
       for (const top of Object.keys(layout.roots).sort((a, b) => b.length - a.length)) {
@@ -481,6 +481,57 @@ export async function restoreSaves(target: SaveTarget, zipFile: string, opts: { 
     }
   }
   return { ok: true, folders: [...tops], entries };
+}
+
+/**
+ * A zip entry that makes a save zip unique to RomM. RomM keeps ONE record per
+ * content hash, and for a zip that hash covers the files inside (not the zip's
+ * bytes, times or comment — verified against RomM 5.2): uploading saves whose
+ * files match an older version returns that old record, so an older save could
+ * never become the newest again. A marker with fresh contents changes that.
+ * It sits at "AppData/<marker>", outside every save folder: never listed,
+ * learned or scoped, and skipped by every restore.
+ */
+export const VERSION_MARKER = '.r2sd-version';
+const MARKER_ENTRY = `AppData/${VERSION_MARKER}`;
+
+/**
+ * What a save zip holds, as "path|size|crc" lines (sorted, without the version
+ * marker): two zips with the same key restore exactly the same files, whatever
+ * their bytes, times or markers. Null if 7-Zip can't read it.
+ */
+export async function zipContentKey(file: string): Promise<string | null> {
+  const r = await run7za(['l', '-slt', '-ba', file]);
+  if (r.code !== 0) return null;
+  const rows: string[] = [];
+  let cur: Record<string, string> = {};
+  const flush = () => {
+    if (cur.Path && cur.Folder !== '+' && cur.Path.replace(/\\/g, '/').split('/').pop() !== VERSION_MARKER) {
+      rows.push(`${cur.Path.replace(/\\/g, '/')}|${cur.Size || ''}|${cur.CRC || ''}`);
+    }
+    cur = {};
+  };
+  for (const line of r.stdout.split(/\r?\n/)) {
+    const m = line.match(/^(\w+) = (.*)$/);
+    if (!m) continue;
+    if (m[1] === 'Path') flush();
+    cur[m[1]] = m[2];
+  }
+  flush();
+  return rows.sort().join('\n');
+}
+
+/** Add (or replace) the version marker inside a save zip. */
+export async function addVersionMarker(zipFile: string, note: string): Promise<SaveResult> {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-marker-'));
+  try {
+    fs.mkdirSync(path.join(tmp, 'AppData'), { recursive: true });
+    fs.writeFileSync(path.join(tmp, MARKER_ENTRY), `${note}\n${crypto.randomUUID()}\n`, 'utf8');
+    const r = await run7za(['a', '-tzip', '-y', zipFile, MARKER_ENTRY], tmp);
+    return r.code === 0 ? { ok: true, file: zipFile } : { ok: false, error: `7za exited ${r.code}: ${r.stderr.slice(0, 300)}` };
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
 }
 
 /** MD5 of a file — RomM's `content_hash` for uploaded saves is MD5, so this is directly comparable. */

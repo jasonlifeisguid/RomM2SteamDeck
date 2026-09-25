@@ -108,6 +108,9 @@ export class RommClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
 
+  /** The server this client talks to (a cache key; never includes credentials). */
+  get server(): string { return this.baseUrl; }
+
   constructor(baseUrl: string, username: string, password: string) {
     this.baseUrl = normalizeBaseUrl(baseUrl);
     this.authHeader = 'Basic ' + Buffer.from(`${username}:${password}`).toString('base64');
@@ -195,6 +198,14 @@ export class RommClient {
     const r = await this.json('POST', `/saves?${q}`, form);
     if (r.status !== 200 && r.status !== 201) throw new Error(`RomM save upload failed: ${r.status} ${JSON.stringify(r.data).slice(0, 120)}`);
     return r.data as RommSave;
+  }
+
+  /** Every save the current user has for a rom, all slots and versions (RomM ≥ 3.x). */
+  async listSaves(romId: number): Promise<RommSave[]> {
+    const r = await this.json('GET', `/saves?rom_id=${romId}`);
+    if (r.status !== 200) throw new Error(`RomM save list failed: ${r.status}`);
+    const d = r.data as RommSave[] | { items?: RommSave[] };
+    return Array.isArray(d) ? d : (d?.items ?? []);
   }
 
   async downloadSave(saveId: number, deviceId?: string): Promise<Buffer> {
