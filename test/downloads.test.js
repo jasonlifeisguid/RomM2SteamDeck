@@ -335,7 +335,10 @@ function hangingClient(fileName, head, total) {
     openDownloadStream: async (_romId, _fsName, signal) => new Response(new ReadableStream({
       start(c) {
         c.enqueue(head);
-        signal?.addEventListener('abort', () => c.error(new Error('aborted')));
+        // Guarded: erroring a stream that is already closed throws, and a throw
+        // inside an abort listener surfaces as an uncaught exception that takes
+        // the whole test file down (seen once on a busy build box).
+        signal?.addEventListener('abort', () => { try { c.error(new Error('aborted')); } catch { /* already closed */ } });
       },
       pull() { return new Promise(() => {}); },
     }), {
@@ -350,20 +353,24 @@ test('mid-download: resume note already on disk, and sync leaves the live stagin
   const events = [];
   const done = downloads.startDownload(hangingClient('live.zip', Buffer.alloc(64 * 1024, 1), 10 * MB),
     rom(45, 'Live', 'live.zip'), '', (e) => events.push(e));
-  const until = async (pred) => { for (let i = 0; i < 200 && !pred(); i++) await new Promise((r) => setTimeout(r, 10)); };
-  await until(() => fs.existsSync(path.join(t.install, 'live.zip.part')));
+  // Generous wait (a loaded build box is slow), and the download is always
+  // cancelled — a failed assertion must not leave it hanging the test process.
+  const until = async (pred, ms = 15000) => { const end = Date.now() + ms; while (!pred() && Date.now() < end) await new Promise((r) => setTimeout(r, 20)); return pred(); };
+  try {
+    assert.ok(await until(() => fs.existsSync(path.join(t.install, 'live.zip.part'))), 'download started');
 
-  // A crash right now would leave a resumable download, not an orphan .part
-  const note = JSON.parse(fs.readFileSync(path.join(t.install, '.r2sd-resume-45.json'), 'utf-8'));
-  assert.equal(note.partPath, path.join(t.install, 'live.zip.part'));
-  assert.equal(note.etag, '"e1"');
+    // A crash right now would leave a resumable download, not an orphan .part
+    const note = JSON.parse(fs.readFileSync(path.join(t.install, '.r2sd-resume-45.json'), 'utf-8'));
+    assert.equal(note.partPath, path.join(t.install, 'live.zip.part'));
+    assert.equal(note.etag, '"e1"');
 
-  // The inline extractor's staging dir belongs to a running download: keep it
-  assert.ok(fs.existsSync(path.join(t.install, '.r2sd-extract-45')));
-  downloads.syncPlatform(PLATFORM_ID, []);
-  assert.ok(fs.existsSync(path.join(t.install, '.r2sd-extract-45')), 'active download untouched by the sweep');
-
-  assert.equal(downloads.cancelDownload(45), true);
+    // The inline extractor's staging dir belongs to a running download: keep it
+    assert.ok(fs.existsSync(path.join(t.install, '.r2sd-extract-45')));
+    downloads.syncPlatform(PLATFORM_ID, []);
+    assert.ok(fs.existsSync(path.join(t.install, '.r2sd-extract-45')), 'active download untouched by the sweep');
+  } finally {
+    downloads.cancelDownload(45);
+  }
   await done;
   assert.equal(events.at(-1).status, 'cancelled');
   assert.deepEqual(fs.readdirSync(t.install), [], 'cancel removes part, note and staging');
