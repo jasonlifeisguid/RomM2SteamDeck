@@ -100,6 +100,8 @@ function applyView() {
   const btn = $('btn-view');
   btn.innerHTML = state.view === 'list' ? '&#9638;' : '&#9776;'; // ▦ (to grid) / ☰ (to list)
   btn.title = state.view === 'list' ? 'Switch to grid view' : 'Switch to list view';
+  // Same size, different layout: the resize observer won't notice
+  if (vg.bottom) { vgMeasure(); vgUpdate(true); }
 }
 
 // ── Helpers ─────────────────────────────────────────────
@@ -660,11 +662,131 @@ function buildCard(rom) {
   return card;
 }
 
+// ── Windowed grid ───────────────────────────────────────
+// Only the rows on screen (plus a buffer) exist as cards; two spacers keep the
+// scroll height of the whole list. A 5,000-game platform used to build 5,000
+// cards — every card, cover observer and listener — on every platform switch,
+// filter change and cold-load page; now it builds a few dozen. Every card is
+// the same height (fixed-ratio cover, name clamped to 2 lines, one-line meta),
+// so row positions are plain arithmetic.
+//
+// Cards are cached per render so covers don't reload while scrolling; the
+// cache is state.cardEls, which the badge/progress helpers already use, so a
+// cached card that is off screen stays up to date.
+const VG_BUFFER_ROWS = 4;
+const VG_CACHE_MAX = 1500;
+const vg = { items: [], cols: 1, pitch: 0, gap: 0, first: -1, last: -1, raf: 0, top: null, bottom: null };
+
+function vgSpacer() {
+  const d = document.createElement('div');
+  d.className = 'vg-spacer';
+  d.hidden = true;
+  return d;
+}
+
+/** Columns and row pitch as currently laid out (zoom, window size, grid/list view). */
+function vgMeasure() {
+  const grid = $('game-grid');
+  const cs = getComputedStyle(grid);
+  vg.cols = grid.classList.contains('list-view') ? 1 : Math.max(1, cs.gridTemplateColumns.split(' ').filter(Boolean).length);
+  vg.gap = parseFloat(cs.rowGap) || 0;
+  const sample = grid.querySelector('.game-card');
+  if (sample) vg.pitch = sample.getBoundingClientRect().height + vg.gap;
+}
+
+/** Show items[start..end) between the spacers, reusing cached cards. */
+function vgRender(start, end) {
+  const grid = $('game-grid');
+  for (const card of grid.querySelectorAll(':scope > .game-card')) {
+    const wrap = card.querySelector('.cover-wrap');
+    if (wrap) coverObserver.unobserve(wrap);
+    card.remove();
+  }
+  const frag = document.createDocumentFragment();
+  // The grid remembers its own position (gp.gridIndex): gp.index also counts
+  // buttons in whatever window is open, and a window closed with the mouse
+  // leaves it pointing at "button #2" — which is not card #2.
+  const focusedId = gp.active && gp.zone === 'grid' && !anyModalOpen() ? vg.items[gp.gridIndex]?.id : undefined;
+  for (let i = start; i < end; i++) {
+    const rom = vg.items[i];
+    let card = state.cardEls.get(rom.id);
+    const fresh = !card;
+    if (fresh) card = buildCard(rom);
+    card.classList.toggle('gp-focus', rom.id === focusedId);
+    const wrap = card.querySelector('.cover-wrap');
+    if (wrap && !wrap.querySelector('img')?.getAttribute('src')) coverObserver.observe(wrap);
+    frag.appendChild(card);
+    if (fresh && (state.progress.has(rom.id) || queueStatusFor(rom.id))) queueMicrotask(() => updateCardProgress(rom.id));
+  }
+  grid.insertBefore(frag, vg.bottom);
+  // Bound the cache: forget cards far from view (they rebuild on demand)
+  if (state.cardEls.size > VG_CACHE_MAX) {
+    const keep = new Set(vg.items.slice(start, end).map((r) => r.id));
+    for (const id of state.cardEls.keys()) {
+      if (state.cardEls.size <= VG_CACHE_MAX / 2) break;
+      if (!keep.has(id)) state.cardEls.delete(id);
+    }
+  }
+}
+
+/** Bring the rendered window in line with the scroll position. `atScroll`
+ *  is the position to lay out for (and restore) when the grid was just
+ *  emptied — at that moment the browser has clamped scrollTop to 0. */
+function vgUpdate(force = false, atScroll = null) {
+  const grid = $('game-grid');
+  if (!vg.bottom || vg.bottom.parentNode !== grid) return; // before the first render
+  const n = vg.items.length;
+  if (!n) { vgRender(0, 0); vg.top.hidden = vg.bottom.hidden = true; vg.first = vg.last = -1; return; }
+  if (!vg.pitch) {
+    // First paint: render one screenful to learn the row height, then place properly
+    vgRender(0, Math.min(n, vg.cols * 8));
+    vgMeasure();
+    if (!vg.pitch) return;
+    force = true;
+  }
+  const rows = Math.ceil(n / vg.cols);
+  const padTop = parseFloat(getComputedStyle(grid).paddingTop) || 0;
+  const y = Math.max(0, (atScroll ?? grid.scrollTop) - padTop);
+  const first = Math.max(0, Math.floor(y / vg.pitch) - VG_BUFFER_ROWS);
+  const last = Math.min(rows - 1, Math.ceil((y + grid.clientHeight) / vg.pitch) + VG_BUFFER_ROWS);
+  if (!force && first === vg.first && last === vg.last) return;
+  vg.first = first; vg.last = last;
+  // Spacer + the gap after it = exactly the rows it stands in for
+  const above = first * vg.pitch - vg.gap;
+  const below = (rows - 1 - last) * vg.pitch - vg.gap;
+  vg.top.hidden = above <= 0; vg.top.style.height = `${Math.max(0, above)}px`;
+  vg.bottom.hidden = below <= 0; vg.bottom.style.height = `${Math.max(0, below)}px`;
+  vgRender(first * vg.cols, Math.min(n, (last + 1) * vg.cols));
+  if (atScroll !== null) grid.scrollTop = atScroll; // the browser clamps it if the list got shorter
+}
+
+/** Scroll just enough for item i's row to be on screen, and render it. */
+function vgEnsureVisible(i) {
+  const grid = $('game-grid');
+  if (!vg.pitch || i < 0) return;
+  const padTop = parseFloat(getComputedStyle(grid).paddingTop) || 0;
+  const rowTop = padTop + Math.floor(i / vg.cols) * vg.pitch;
+  const rowBottom = rowTop + vg.pitch - vg.gap;
+  if (rowTop < grid.scrollTop) grid.scrollTop = rowTop - vg.gap;
+  else if (rowBottom > grid.scrollTop + grid.clientHeight) grid.scrollTop = rowBottom - grid.clientHeight + vg.gap;
+  vgUpdate();
+}
+
+function vgSchedule() {
+  if (vg.raf) return;
+  vg.raf = requestAnimationFrame(() => { vg.raf = 0; vgUpdate(); });
+}
+
 function renderGrid() {
   const grid = $('game-grid');
+  // Emptying the grid lets the browser clamp scrollTop to 0; a redraw (filter,
+  // background refresh, finished download) must not throw you back to the top.
+  const keepScroll = grid.scrollTop;
   coverObserver.disconnect();
   grid.innerHTML = '';
   state.cardEls = new Map();
+  vg.top = vgSpacer(); vg.bottom = vgSpacer();
+  grid.append(vg.top, vg.bottom);
 
   const roms = visibleRoms();
   $('grid-status').hidden = roms.length > 0;
@@ -674,32 +796,20 @@ function renderGrid() {
       ? 'Nothing installed on this platform yet — turn off the installed filter (✓) to browse.'
       : state.installedOnly ? 'No installed games match your filters.' : 'No games match your filters.';
 
-  const frag = document.createDocumentFragment();
-  for (const rom of roms) frag.appendChild(buildCard(rom));
-  grid.appendChild(frag);
-
-  // Restore progress / queued overlays after a re-render
-  for (const romId of state.progress.keys()) updateCardProgress(romId);
-  for (const q of state.queue) updateCardProgress(q.romId);
+  vg.items = roms;
+  vg.first = vg.last = -1;
+  vgMeasure();
+  vgUpdate(true, keepScroll);
 
   // Re-apply the gamepad focus ring after a re-render (grid only — the other
   // zones keep a reference to their element, which survives a grid re-render)
-  if (gp.active && gp.zone === 'grid' && gp.index >= 0) gpSetFocus(gp.index);
+  // (not while a window is open: a background refresh must not pull the ring off it)
+  if (gp.active && gp.zone === 'grid' && !anyModalOpen() && gp.gridIndex >= 0) gpSetFocus(Math.min(gp.gridIndex, roms.length - 1));
 }
 
-/** Cold-load fast path: pages arrive from the server already sorted by name,
- *  so while the view is in its default state (no search/genre filter, name
- *  ascending) a new page can be appended instead of rebuilding every card. */
-function canAppendPages() {
-  return !state.search && !state.genre && !state.installedOnly && state.sort === 'name' && state.sortDir === 'asc';
-}
-function appendCards(roms) {
-  const grid = $('game-grid');
-  const frag = document.createDocumentFragment();
-  for (const rom of roms) frag.appendChild(buildCard(rom));
-  grid.appendChild(frag);
-  $('grid-status').hidden = state.roms.length > 0;
-}
+$('game-grid').addEventListener('scroll', vgSchedule, { passive: true });
+// Window size, UI zoom, or grid/list view changed: new columns / row height
+new ResizeObserver(() => { vgMeasure(); vgUpdate(true); }).observe($('game-grid'));
 
 async function selectPlatform(platformId, refresh = false) {
   state.currentPlatformId = platformId;
@@ -707,11 +817,11 @@ async function selectPlatform(platformId, refresh = false) {
   $('platform-title').textContent = platform ? platform.name : 'Library';
   renderPlatforms();
 
+  setRoms([]);
+  $('game-grid').scrollTop = 0; // a new platform starts at the top
+  renderGrid();
   $('grid-status').hidden = false;
   $('grid-status').textContent = 'Loading…';
-  $('game-grid').innerHTML = '';
-  state.cardEls = new Map();
-  setRoms([]);
 
   try {
     const result = await window.r2sd.getRoms(platformId, { refresh });
@@ -745,8 +855,7 @@ window.r2sd.onRomsProgress(({ platformId, page, loaded, total }) => {
   if (platformId !== state.currentPlatformId) return;
   addRoms(page);
   updateGenreFilter();
-  if (canAppendPages()) appendCards(page);
-  else renderGrid();
+  renderGrid(); // cheap now: only the rows on screen are built
   $('grid-status').hidden = false;
   $('grid-status').textContent = loaded < total
     ? `Loading library from server (first time only)… ${loaded} / ${total}`
@@ -1820,15 +1929,16 @@ async function saveSettings() {
 //
 // A activates, B backs out (menu → modal → nothing), LB/RB jump platforms.
 const GP_POLL_MS = 50;
-const gp = { zone: 'grid', index: -1, ctl: null, timer: null, prev: {}, lastMove: 0, active: false };
+const gp = { zone: 'grid', index: -1, gridIndex: -1, ctl: null, timer: null, prev: {}, lastMove: 0, active: false };
 
+/** The grid zone walks the whole (filtered, sorted) game list — not just the
+ *  cards that happen to exist right now; see the windowed grid. */
 function gpCards() {
-  return [...document.querySelectorAll('#game-grid .game-card')];
+  return vg.items;
 }
 
 function gpColumns() {
-  const cols = getComputedStyle($('game-grid')).gridTemplateColumns.split(' ').filter(Boolean).length;
-  return Math.max(1, cols);
+  return vg.cols;
 }
 
 const gpVisible = (el) => !!el && !el.disabled && el.getClientRects().length > 0;
@@ -1890,9 +2000,17 @@ function gpFocus(zone, items, i) {
   gpClearFocus();
   if (!items.length) { gp.index = -1; gp.ctl = null; return; }
   gp.index = Math.max(0, Math.min(i, items.length - 1));
+  if (zone === 'grid') {
+    // items are roms: scroll that row into view (which builds its card), then ring it
+    gp.ctl = null;
+    gp.gridIndex = gp.index;
+    vgEnsureVisible(gp.index);
+    cardFor(items[gp.index].id)?.classList.add('gp-focus');
+    return;
+  }
   const el = items[gp.index];
-  gp.ctl = zone === 'grid' ? null : el;
-  el.classList.add(zone === 'grid' ? 'gp-focus' : 'gp-focus-ctl');
+  gp.ctl = el;
+  el.classList.add('gp-focus-ctl');
   el.scrollIntoView({ block: 'nearest' });
 }
 
@@ -1911,7 +2029,8 @@ function gpSetFocus(i) {
 
 /** Follow the remembered element across re-renders / async modal content. */
 function gpSyncIndex(zone, items) {
-  if (zone !== 'grid' && gp.ctl) {
+  if (zone === 'grid') return gp.gridIndex; // its own position, whatever window came and went
+  if (gp.ctl) {
     const at = items.indexOf(gp.ctl);
     if (at >= 0) return at;
   }
@@ -1966,7 +2085,7 @@ function gpActivate() {
   const i = gpSyncIndex(zone, items);
   const el = items[i];
   if (!el) return;
-  if (zone === 'grid') { gp.gridIndex = i; el.click(); setTimeout(gpEnterModal, 60); return; }
+  if (zone === 'grid') { gp.gridIndex = i; openDetail(el); setTimeout(gpEnterModal, 60); return; }
   // A text box wants the keyboard, not a click (the Deck's on-screen keyboard follows focus)
   if (el.tagName === 'INPUT' && /text|search|password|number/.test(el.type)) { el.focus(); return; }
   if (el.tagName === 'TEXTAREA') { el.focus(); return; }

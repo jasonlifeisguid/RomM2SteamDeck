@@ -768,3 +768,7 @@ button.danger:hover { border-color: #f87171; }
 .history-row .tag.latest { color: var(--accent); border-color: var(--accent); }
 .history-row .tag.here { color: #4ade80; border-color: #4ade80; }
 .history-empty { padding: 12px; color: var(--text-muted); font-size: 0.85rem; }
+/* Windowed grid: spacers stand in for the rows that aren't built (see vgUpdate).
+   Every card must be the same height for that arithmetic — keep meta lines to one line. */
+.vg-spacer { grid-column: 1 / -1; flex-shrink: 0; pointer-events: none; } /* list view is a flex column: without flex-shrink: 0 an empty spacer shrinks to nothing */
+.game-size, .game-grid.list-view .game-genres { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
