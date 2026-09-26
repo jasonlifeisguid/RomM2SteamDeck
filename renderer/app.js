@@ -882,6 +882,32 @@ window.r2sd.onCloudEvent((e) => {
   }
 });
 
+// "Ask after playing": the game exited and its saves changed since the last RomM sync
+window.r2sd.onCloudSuggest((e) => {
+  const game = { id: e.romId, name: e.gameName };
+  if (e.suggest === 'conflict') {
+    stickyToast(`${e.gameName}: saves changed here and on RomM (from ${e.remoteFrom || 'another device'}) — choose which to keep.`, [
+      { label: 'Saves & Folders…', fn: () => openFoldersModal(game) },
+      { label: 'Not now' },
+    ], 'error');
+    return;
+  }
+  const what = e.state === 'local-only' ? "aren't on RomM yet" : 'changed since the last RomM sync';
+  stickyToast(`${e.gameName}: your saves ${what} (${e.files} file${e.files === 1 ? '' : 's'}, ${formatSize(e.bytes)}). Upload them?`, [
+    { label: 'Upload to RomM', fn: async () => {
+      const res = await window.r2sd.cloudUpload(e.romId, e.root);
+      if (res.error) toast(`${e.gameName}: upload failed — ${res.error}`, 'error');
+      else toast(`${e.gameName}: saves uploaded to RomM`, 'success');
+      if (state.detailRom?.id === e.romId) refreshDetailCloud();
+    } },
+    { label: 'Not now' },
+    { label: "Don't ask for this game", fn: async () => {
+      await window.r2sd.setCloudAsk(e.romId, false);
+      toast(`${e.gameName}: won't ask again — upload any time from its dialog`, 'success');
+    } },
+  ], 'success');
+});
+
 window.r2sd.onUpdateAvailable((info) => {
   stickyToast(`RomM2SteamDeck ${info.latest} is available (you have ${info.current})`, [
     { label: 'Open release', fn: () => window.r2sd.openReleasePage(info.url) },
@@ -1114,6 +1140,60 @@ function refreshDetailActions() {
   }
 }
 
+/**
+ * The "RomM saves" line in a game's dialog: where this game's saves stand
+ * against RomM, with the one action that makes sense right now. Shown for
+ * installed PC games with a save place of their own (a per-game prefix, or
+ * the Windows profile once the game's save locations are known), whatever
+ * the cloud-saves mode — it is the manual control.
+ */
+const CLOUD_LINE = {
+  'in-sync': { text: 'In sync', cls: 'ok' },
+  'local-newer': { text: 'Changed here since the last sync', cls: 'warn', action: 'upload' },
+  'local-only': { text: 'Not on RomM yet', cls: 'warn', action: 'upload' },
+  'remote-newer': { text: 'RomM has newer saves', cls: 'warn', action: 'download' },
+  'remote-only': { text: 'On RomM, none here yet', cls: 'warn', action: 'download' },
+  conflict: { text: 'Changed here and on RomM', cls: 'bad', action: 'choose' },
+};
+async function refreshDetailCloud() {
+  const rom = state.detailRom;
+  const row = $('detail-cloud-row');
+  const rec = rom && state.downloads.get(rom.id);
+  if (!rom || !rec || !platformSetup(rom.platform_id).autoExtract || queueStatusFor(rom.id)) { row.hidden = true; return; }
+  const st = await window.r2sd.cloudOwnStatus(rom.id);
+  if (state.detailRom?.id !== rom.id) return; // another game's dialog by now
+  const line = st.ok && !st.unscoped ? CLOUD_LINE[st.state] : null;
+  row.hidden = !line;
+  if (!line) return;
+  const stateEl = $('detail-cloud-state');
+  stateEl.className = `detail-cloud-state ${line.cls}`;
+  const when = st.remote?.updatedAt ? new Date(st.remote.updatedAt).toLocaleString() : '';
+  stateEl.textContent = line.text + (st.state === 'remote-newer' || st.state === 'remote-only'
+    ? ` (${[st.remote?.fromDevice ? `from ${st.remote.fromDevice}` : '', when].filter(Boolean).join(', ')})`
+    : '');
+  const btn = $('btn-cloud-action');
+  btn.hidden = !line.action;
+  btn.textContent = { upload: 'Upload save', download: 'Download save', choose: 'Choose…' }[line.action] || '';
+  btn.title = {
+    upload: 'Upload this game\'s saves to RomM as the newest version (RomM keeps the last 5)',
+    download: 'Restore the newest RomM save here (asks first)',
+    choose: 'Both sides changed — pick which to keep in Saves & Folders',
+  }[line.action] || '';
+  btn.onclick = async () => {
+    if (line.action === 'choose') { openFoldersModal(rom); return; }
+    btn.disabled = true;
+    try {
+      const res = line.action === 'upload' ? await window.r2sd.cloudUpload(rom.id, st.root) : await window.r2sd.cloudDownload(rom.id, st.root);
+      if (res.cancelled) return;
+      if (res.error) toast(res.error, 'error');
+      else toast(line.action === 'upload' ? `${rom.name || rom.fs_name}: saves uploaded to RomM` : `${rom.name || rom.fs_name}: saves restored from RomM`, 'success');
+    } finally {
+      btn.disabled = false;
+      refreshDetailCloud();
+    }
+  };
+}
+
 function openDetail(rom) {
   state.detailRom = rom;
   $('detail-name').textContent = rom.name || rom.fs_name || 'Unknown';
@@ -1145,6 +1225,8 @@ function openDetail(rom) {
   }
 
   refreshDetailActions();
+  $('detail-cloud-row').hidden = true;
+  refreshDetailCloud();
 
   const modal = $('detail-modal');
   modal.hidden = false;
@@ -1769,6 +1851,7 @@ const FAUGUS_PREFIX_OPTIONS = [
 ];
 const CLOUD_OPTIONS = [
   { value: 'off', label: 'Off' },
+  { value: 'ask', label: 'Ask after playing' },
   { value: 'auto', label: 'Auto' },
 ];
 
@@ -1823,15 +1906,19 @@ async function renderFaugusSetting(cfg) {
   $('cfg-cloud-row').hidden = platform !== 'linux' && platform !== 'win32';
   setDropdownValue('cfg-cloud', cfg.cloudSaves || 'off');
   if (platform === 'win32') {
-    $('cfg-cloud-hint').textContent = cfg.cloudSaves === 'auto'
-      ? 'Restore before Play, upload after the game exits — games with known save locations'
-      : 'Manual upload/download in Saves & Folders…';
+    $('cfg-cloud-hint').textContent = {
+      auto: 'Restore before Play, upload after the game exits — games with known save locations',
+      ask: 'When a game exits with changed saves, offers to upload them — games with known save locations',
+    }[cfg.cloudSaves] || "Upload/download by hand from a game's dialog or Saves & Folders…";
     return;
   }
   if (platform !== 'linux') return;
-  $('cfg-cloud-hint').textContent = cfg.cloudSaves === 'auto'
-    ? (cfg.faugusPrefix === 'shared' ? 'Needs Prefix: Per game' : 'Restore before Play, upload after — per-game prefixes only')
-    : 'Manual upload/download in Saves & Folders…';
+  $('cfg-cloud-hint').textContent = cfg.cloudSaves !== 'off' && cfg.faugusPrefix === 'shared'
+    ? 'Needs Prefix: Per game'
+    : {
+      auto: 'Restore before Play, upload after — per-game prefixes only',
+      ask: 'When a game exits with changed saves, offers to upload them — per-game prefixes only',
+    }[cfg.cloudSaves] || "Upload/download by hand from a game's dialog or Saves & Folders…";
   setDropdownValue('cfg-faugus', cfg.faugus || 'auto');
   setDropdownValue('cfg-faugusprefix', cfg.faugusPrefix || 'per-game');
   $('cfg-faugusprefix-hint').textContent = cfg.faugusPrefix === 'shared'

@@ -295,6 +295,18 @@ function pruneBackups(dir: string, gameName: string, keep: number): void {
   } catch { /* best effort */ }
 }
 
+/**
+ * "Ask after playing": what to offer when a game has exited, from its sync
+ * state. Only changes made here are worth a prompt — "RomM is newer" is for
+ * the next Play (or the game's dialog), not for the moment you stop playing.
+ */
+export function exitSuggestion(st: Pick<CloudStatus, 'state' | 'unscoped'>): 'upload' | 'conflict' | null {
+  if (st.unscoped) return null;
+  if (st.state === 'local-newer' || st.state === 'local-only') return 'upload';
+  if (st.state === 'conflict') return 'conflict';
+  return null;
+}
+
 export type AutoAction = { action: 'none' | 'restored' | 'uploaded' | 'seeded' | 'unscoped'; from?: string | null; at?: string } | { action: 'conflict' } | { action: 'error'; error: string };
 
 /**

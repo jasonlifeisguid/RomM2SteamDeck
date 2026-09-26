@@ -58,6 +58,10 @@ contextBridge.exposeInMainWorld('r2sd', {
   cloudStatus: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:status', romId, prefixRoot),
   cloudUpload: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:upload', romId, prefixRoot),
   cloudDownload: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:download', romId, prefixRoot),
+  cloudOwnStatus: (romId: number) => ipcRenderer.invoke('cloud:ownStatus', romId),
+  setCloudAsk: (romId: number, ask: boolean) => ipcRenderer.invoke('cloud:setAsk', romId, ask),
+  onCloudSuggest: (cb: (payload: unknown) => void) =>
+    ipcRenderer.on('cloud:suggest', (_e, payload) => cb(payload)),
   cloudHistory: (romId: number, prefixRoot: string) => ipcRenderer.invoke('cloud:history', romId, prefixRoot),
   cloudRestoreVersion: (romId: number, prefixRoot: string, saveId: number, label: string) =>
     ipcRenderer.invoke('cloud:restoreVersion', romId, prefixRoot, saveId, label),

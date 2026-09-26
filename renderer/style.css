@@ -772,3 +772,6 @@ button.danger:hover { border-color: #f87171; }
    Every card must be the same height for that arithmetic — keep meta lines to one line. */
 .vg-spacer { grid-column: 1 / -1; flex-shrink: 0; pointer-events: none; } /* list view is a flex column: without flex-shrink: 0 an empty spacer shrinks to nothing */
 .game-size, .game-grid.list-view .game-genres { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.detail-cloud-state.ok { color: #4ade80; }
+.detail-cloud-state.warn { color: var(--accent); }
+.detail-cloud-state.bad { color: #f87171; }

@@ -51,3 +51,15 @@ test('setConfig round-trips each mode and rejects junk', () => {
   const onDisk = JSON.parse(fs.readFileSync(path.join(dir, 'config.json'), 'utf8'));
   assert.equal(onDisk.playWorkspace, 'off');
 });
+
+test('cloudSaves accepts off / ask / auto and falls back to off', () => {
+  const fs = require('fs'); const os = require('os'); const path = require('path');
+  const config = require('../dist/config.js');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'r2sd-cfg-ask-'));
+  try {
+    config.setUserDataDirForTests(dir);
+    assert.equal(config.getPublicConfig().cloudSaves, 'off', 'default');
+    for (const v of ['ask', 'auto', 'off']) assert.equal(config.setConfig({ cloudSaves: v }).cloudSaves, v);
+    assert.equal(config.setConfig({ cloudSaves: 'sometimes' }).cloudSaves, 'off');
+  } finally { config.setUserDataDirForTests(null); fs.rmSync(dir, { recursive: true, force: true }); }
+});

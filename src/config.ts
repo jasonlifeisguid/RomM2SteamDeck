@@ -37,7 +37,9 @@ interface StoredConfig {
   faugus: 'auto' | 'off'; // Linux: Play a .exe through Faugus Launcher when installed
   faugusPrefix: 'per-game' | 'shared'; // register each game in Faugus (own prefix) or use its shared default prefix
   installedOnly: boolean; // library shows only games present on disk
-  cloudSaves: 'off' | 'auto'; // sync per-game prefix saves with RomM around Play
+  // RomM cloud saves around Play: never; 'ask' = after a game exits, offer to
+  // upload saves that changed; 'auto' = restore before Play, upload after.
+  cloudSaves: 'off' | 'ask' | 'auto';
   saveExcludes: string[];     // config-file patterns kept out of save backups/sync
   rommDeviceId: string;       // this machine's RomM device id ('' until registered)
   updateCheck: 'auto' | 'off'; // ask GitHub for a newer release on startup
@@ -66,7 +68,7 @@ export interface PublicConfig {
   faugus: 'auto' | 'off';
   faugusPrefix: 'per-game' | 'shared';
   installedOnly: boolean;
-  cloudSaves: 'off' | 'auto';
+  cloudSaves: 'off' | 'ask' | 'auto';
   saveExcludes: string[];
   rommDeviceId: string;
   updateCheck: 'auto' | 'off';
@@ -175,6 +177,8 @@ function decryptStored(stored: StoredConfig): string | null {
   }
 }
 
+const normalizeCloudSaves = (v: unknown): 'off' | 'ask' | 'auto' => (v === 'auto' ? 'auto' : v === 'ask' ? 'ask' : 'off');
+
 export function getPublicConfig(): PublicConfig {
   const { stored, password } = load();
   return {
@@ -192,7 +196,7 @@ export function getPublicConfig(): PublicConfig {
     faugus: stored.faugus === 'off' ? 'off' : 'auto',
     faugusPrefix: stored.faugusPrefix === 'shared' ? 'shared' : 'per-game',
     installedOnly: stored.installedOnly === true,
-    cloudSaves: stored.cloudSaves === 'auto' ? 'auto' : 'off',
+    cloudSaves: normalizeCloudSaves(stored.cloudSaves),
     saveExcludes: Array.isArray(stored.saveExcludes) ? stored.saveExcludes.filter((p) => typeof p === 'string') : DEFAULT_CONFIG_EXCLUDES,
     rommDeviceId: typeof stored.rommDeviceId === 'string' ? stored.rommDeviceId : '',
     updateCheck: stored.updateCheck === 'off' ? 'off' : 'auto',
@@ -232,7 +236,7 @@ export function setConfig(update: {
   if (update.faugus !== undefined) stored.faugus = update.faugus === 'off' ? 'off' : 'auto';
   if (update.installedOnly !== undefined) stored.installedOnly = Boolean(update.installedOnly);
   if (update.faugusPrefix !== undefined) stored.faugusPrefix = update.faugusPrefix === 'shared' ? 'shared' : 'per-game';
-  if (update.cloudSaves !== undefined) stored.cloudSaves = update.cloudSaves === 'auto' ? 'auto' : 'off';
+  if (update.cloudSaves !== undefined) stored.cloudSaves = normalizeCloudSaves(update.cloudSaves);
   if (update.saveExcludes !== undefined) stored.saveExcludes = (Array.isArray(update.saveExcludes) ? update.saveExcludes : []).map((p) => String(p).trim()).filter(Boolean);
   if (update.rommDeviceId !== undefined) stored.rommDeviceId = String(update.rommDeviceId);
   if (update.updateCheck !== undefined) stored.updateCheck = update.updateCheck === 'off' ? 'off' : 'auto';

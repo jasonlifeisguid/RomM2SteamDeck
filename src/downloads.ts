@@ -50,6 +50,8 @@ export interface DownloadRecord {
   savePaths?: string[];
   /** Where savePaths came from, for the UI ("PCGamingWiki: X", "learned from restore"). */
   savePathsNote?: string;
+  /** Cloud saves in "Ask after playing" mode: false = don't offer uploads for this game. */
+  cloudAsk?: boolean;
 }
 
 export interface RomInfo {

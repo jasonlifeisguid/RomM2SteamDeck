@@ -510,6 +510,30 @@ function gameExited(romId: number, gameName: string): void {
   }
 }
 
+/**
+ * "Ask after playing": the game has exited — if its saves changed since the
+ * last RomM sync, offer to upload them (the renderer shows a notice with
+ * Upload / Not now / Don't ask for this game). Quiet on any problem: an
+ * offline RomM just means no suggestion this time.
+ */
+async function suggestCloudUpload(romId: number, gameName: string): Promise<void> {
+  try {
+    if (downloads.findDownload(romId)?.cloudAsk === false) return;
+    const tgt = ownTargetFor(romId);
+    if (!tgt) return;
+    const st = await cloud.status(await cloudDeps(romId), romId, tgt);
+    const suggest = cloud.exitSuggestion(st);
+    if (!suggest) return;
+    send('cloud:suggest', {
+      romId, gameName, root: rootOf(tgt), suggest, state: st.state,
+      files: st.local?.files ?? 0, bytes: st.local?.bytes ?? 0,
+      remoteFrom: st.remote?.fromDevice ?? null, remoteAt: st.remote?.updatedAt ?? null,
+    });
+  } catch (err) {
+    console.error('cloud suggestion failed:', err);
+  }
+}
+
 /** The target auto-sync is allowed to touch: the game's own prefix (never Faugus's shared
  *  default), or on Windows the real profile (scoped to the game's save locations). */
 function ownTargetFor(romId: number): saves.SaveTarget | null {
@@ -713,8 +737,11 @@ function registerIpc(): void {
     let cloudAction: cloud.AutoAction | undefined;
     let cloudTarget: saves.SaveTarget | null = null;
     const gameName = rec?.romName || path.basename(target);
-    const autoCloud = cfg.cloudSaves === 'auto' && config.isConfigured() && (
+    // Cloud saves need a place of the game's own: its Faugus prefix, or the Windows profile (scoped)
+    const cloudCapable = config.isConfigured() && (
       process.platform === 'win32' || (process.platform === 'linux' && cfg.faugus !== 'off' && cfg.faugusPrefix !== 'shared'));
+    const autoCloud = cfg.cloudSaves === 'auto' && cloudCapable;
+    const askCloud = cfg.cloudSaves === 'ask' && cloudCapable;
     if (autoCloud) {
       cloudTarget = ownTargetFor(romId);
       if (!cloudTarget && process.platform === 'linux') {
@@ -738,6 +765,7 @@ function registerIpc(): void {
       gameFolder: gameFolders(romId).gameFolder || undefined,
       onExit: async () => {
         gameExited(romId, gameName);
+        if (askCloud) { await suggestCloudUpload(romId, gameName); return; }
         if (!autoCloud) return;
         // Re-resolve: the prefix now exists (and the registration may have
         // chosen a suffixed id if the title clashed).
@@ -815,6 +843,16 @@ function registerIpc(): void {
     if (confirm.response !== 0) return { ok: false, cancelled: true };
     return cloud.download(await cloudDeps(romId), romId, tgt);
   });
+  // The game dialog's save line: this game's own save place and its sync state
+  ipcMain.handle('cloud:ownStatus', async (_e, romId: number) => {
+    if (!config.isConfigured()) return { ok: false, reason: 'not-connected' };
+    const tgt = ownTargetFor(romId);
+    if (!tgt) return { ok: false, reason: 'no-prefix' };
+    try { return { ok: true, root: rootOf(tgt), ...(await cloud.status(await cloudDeps(romId), romId, tgt)) }; }
+    catch (err) { return { ok: false, reason: 'error', error: err instanceof Error ? err.message : String(err) }; }
+  });
+  ipcMain.handle('cloud:setAsk', (_e, romId: number, ask: boolean) => downloads.updateRecord(romId, { cloudAsk: Boolean(ask) }));
+
   // Version history: the versions RomM keeps, and bringing an older one back
   ipcMain.handle('cloud:history', async (_e, romId: number, prefixRoot: string) => {
     if (!targetFor(romId, prefixRoot)) return { ok: false, error: 'Not a prefix of this game' };
