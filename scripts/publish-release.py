@@ -3,10 +3,10 @@
 
     python scripts/publish-release.py 2.2.15 path/to/release-notes.md
 
-Expects the artifacts in release/ (from `npm run dist:win` and the Linux
-AppImage build). Idempotent: re-running skips assets already uploaded. The
-GitHub token is read from git's credential store for github.com and is never
-printed. Asset names match earlier releases (installer gets dashes).
+Expects the artifacts in release/ (from scripts/build-release.sh).
+Idempotent: re-running skips assets already uploaded. The GitHub token is
+read from git's credential store for github.com and is never printed. Asset
+names match earlier releases (installer gets dashes).
 """
 import json, os, subprocess, sys, urllib.request, urllib.error
 

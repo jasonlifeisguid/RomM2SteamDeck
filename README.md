@@ -212,25 +212,23 @@ npm install
 npm start                 # run in dev
 npm test                  # unit + integration tests (VDF parser, extraction pipeline, Faugus/prefix resolution, helpers)
 
-npm run dist:win          # Windows: NSIS installer + portable exe (run on Windows)
+npm run dist:win          # Windows: NSIS installer + portable exe (Windows, or Linux with Wine)
 npm run dist:linux        # Linux/Steam Deck: AppImage (run on Linux)
 npm run dist:mac          # macOS: dmg (run on a Mac)
 ```
 
-Output lands in `release/`. Each target must be built on its own OS. If you only have a Windows box, the AppImage builds fine in a Linux container:
+Output lands in `release/`.
 
-```bash
-docker run --rm --user "$(id -u):$(id -g)" -e HOME=/work/.home -v "$PWD":/work -w /work node:22-bookworm bash -c "npm ci && npm run dist:linux"
-```
+**Releases** are built on Linux from a git tag, in throwaway Docker containers: `scripts/build-release.sh v<version>` runs the tests (log kept as `release/last-test.txt`), builds the AppImage, then builds the Windows installer and portable exe with Debian's Wine (only needed for the NSIS uninstaller step). Pass `--host user@machine` (or set `R2SD_BUILD_HOST`) to build on another machine over SSH instead of local Docker.
 
-`scripts/publish-release.py <version> <notes.md>` creates the GitHub release and uploads the three artifacts (uses the `github.com` entry in your git credential store).
+`scripts/publish-release.py <version> <notes.md>` then creates the GitHub release and uploads the three artifacts (uses the `github.com` entry in your git credential store).
 
 ### Layout
 
 ```
 src/           Electron main process — window, IPC, RomM client, config, downloads, Steam (shortcuts.vdf + live SteamClient bridge), Faugus launcher, prefix resolution, saves + cloud sync, save-location lookup, update check, Deck detection
 renderer/      UI — plain HTML/CSS/JS, no framework
-scripts/       add-r2sd-to-steam.js (standalone "add R2SD to Steam" helper), publish-release.py
+scripts/       add-r2sd-to-steam.js (standalone "add R2SD to Steam" helper), build-release.sh, publish-release.py
 test/          node:test suites (run against the compiled dist/)
 build/         App icons + electron-builder afterPack hook
 ```
