@@ -1243,7 +1243,14 @@ function closeDetail() {
 let exeSelected = null;
 let exePickerRom = null;
 
+// Every open (and close) of the picker gets a ticket. Its async steps (Steam
+// status, the exe scan) can finish after the user has moved on — e.g. the
+// refresh that follows "Use This" completing after the picker was closed and
+// the next game's opened — and a stale one must not fill in someone else's list.
+let exePickerTicket = 0;
+
 async function openExePicker(rom) {
+  const ticket = ++exePickerTicket;
   exePickerRom = rom;
   exeSelected = null;
   const hadDefault = Boolean(state.downloads.get(rom.id)?.defaultExe);
@@ -1261,6 +1268,7 @@ async function openExePicker(rom) {
   // Native "Add to Steam" only shown when a Steam install is found; the
   // "right-click → Add to Steam" tip is the Linux/Deck manual fallback.
   const [platform, steam, fg] = await Promise.all([window.r2sd.getPlatform(), window.r2sd.steamStatus(), window.r2sd.faugusStatus()]);
+  if (ticket !== exePickerTicket) return;
   $('exe-steam').hidden = !steam.found;
   const faugusActive = platform === 'linux' && fg.found && fg.enabled;
   $('exe-faugus-tip').hidden = !faugusActive;
@@ -1273,6 +1281,7 @@ async function openExePicker(rom) {
   $('exe-modal').hidden = false;
 
   const exes = await window.r2sd.listExes(rom.id);
+  if (ticket !== exePickerTicket) return;
   if (!exes.length) {
     $('exe-list').innerHTML = '<p class="error small">No .exe files found in the installed folder.</p>';
     return;
@@ -1311,9 +1320,18 @@ async function openExePicker(rom) {
     $('exe-list').appendChild(label);
   });
   if (exeSelected) enableActions(); // a default was pre-selected
+  // The picker opens a moment after A was pressed (it asks for Steam's status
+  // first), by which time the controller had settled on the window underneath.
+  // Bring it here: onto the current default, or the first executable.
+  if (gp.active) {
+    const items = gpModalControls();
+    const at = items.findIndex((el) => el.name === 'exe' && el.checked);
+    gpFocus('modal', items, at >= 0 ? at : Math.max(0, items.findIndex((el) => el.name === 'exe')));
+  }
 }
 
 function closeExePicker() {
+  exePickerTicket++; // anything still loading for the closed picker is dropped
   $('exe-modal').hidden = true;
   exePickerRom = null;
   exeSelected = null;
