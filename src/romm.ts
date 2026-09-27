@@ -155,17 +155,28 @@ export class RommClient {
     signal?: AbortSignal,
     resume?: { from: number; ifRange?: string }
   ): Promise<Response> {
+    const { url, headers } = this.downloadRequest(romId, fsName, resume);
+    const response = await fetch(url, { headers, signal });
+    if (!response.ok || !response.body) {
+      throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+    }
+    return response;
+  }
+
+  /** The request openDownloadStream makes, as plain data — the download
+   *  worker makes it from its own thread. */
+  downloadRequest(
+    romId: number,
+    fsName: string,
+    resume?: { from: number; ifRange?: string }
+  ): { url: string; headers: Record<string, string> } {
     const url = `${this.baseUrl}/api/roms/${romId}/content/${encodeURIComponent(fsName)}`;
     const headers: Record<string, string> = { Authorization: this.authHeader };
     if (resume && resume.from > 0) {
       headers.Range = `bytes=${resume.from}-`;
       if (resume.ifRange) headers['If-Range'] = resume.ifRange;
     }
-    const response = await fetch(url, { headers, signal });
-    if (!response.ok || !response.body) {
-      throw new Error(`Download failed: ${response.status} ${response.statusText}`);
-    }
-    return response;
+    return { url, headers };
   }
 
   // ── Saves (RomM ≥ 3.x; devices ≥ 5.x) ──────────────────────────────────

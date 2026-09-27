@@ -20,18 +20,21 @@
  * Before this, a flat archive left the game's files loose in the install root
  * and the tracking record pointed at whichever subfolder came first — so
  * "delete" removed only that subfolder and the exe scanner never saw the exe.
+ *
+ * The bytes themselves (network → .part, plus the inline zip parser) move in
+ * pump.ts, normally inside a worker thread — see "Transfer" below.
  */
 import { app } from 'electron';
 import { spawn } from 'child_process';
-import { once } from 'events';
+import { Worker } from 'worker_threads';
 import * as fs from 'fs';
 import * as path from 'path';
 import { RommClient } from './romm';
 import * as config from './config';
-import { isInsideFolder, safeFileName, safeJoin, sanitizeForMatch, sanitizeFolderName } from './fsutil';
+import { isInsideFolder, safeFileName, sanitizeForMatch, sanitizeFolderName } from './fsutil';
 
-const unzipper = require('unzipper');
 import { sevenZipPath } from './sevenzip';
+import { pumpToFile, PumpHooks, PumpOptions, PumpResult } from './pump';
 
 export interface DownloadRecord {
   romId: number;
@@ -72,9 +75,6 @@ const timeouts = { stallMs: 60_000, retryDelaysMs: [2000, 5000] };
 export function setTimeoutsForTests(t: Partial<typeof timeouts> | null): void {
   Object.assign(timeouts, t ?? { stallMs: 60_000, retryDelaysMs: [2000, 5000] });
 }
-
-/** Write buffer of the .part file stream (see the pump). */
-const WRITE_BUFFER_BYTES = 4 * 1024 * 1024;
 
 // ── Serial download queue ───────────────────────────────────────────────
 // Clicking download enqueues; one download+extract runs at a time, the rest
@@ -342,6 +342,127 @@ function promoteExtracted(staging: string, installPath: string, rom: RomInfo): s
   return dest;
 }
 
+// ── Transfer: where the bytes move ──────────────────────────────────────
+// One attempt's connection. startDownload makes every decision (resume or
+// restart, file name, space, retries, records); a Transfer only reports the
+// response head and then pumps bytes (pump.ts) where it's told to. Normally
+// that happens in a worker thread — in the Electron main process every
+// socket/file event goes through Chromium's message loop, which capped a
+// 10 GbE download at ~270 MB/s with the main thread busy. In the worker (with
+// pump.ts's double-buffered writer) it measured ~490 MB/s — the server and
+// disk limit — with the main thread idle. If the worker can't start, the same
+// pump runs in-process.
+
+type StallableController = AbortController & { stalled?: boolean };
+type ResumeRequest = { from: number; ifRange?: string };
+
+interface Transfer {
+  readonly kind: 'worker' | 'main';
+  readonly status: number;
+  header(name: string): string | null;
+  pump(opts: PumpOptions, onProgress: PumpHooks['onProgress']): Promise<PumpResult>;
+  /** Drop the connection (and the worker). Safe to call more than once. */
+  close(): void;
+}
+
+/** The worker script could not be started — use the in-process pump. */
+class WorkerUnavailable extends Error {}
+
+let workerScript = path.join(__dirname, 'download-worker.js');
+let workerDisabled = process.env.R2SD_DOWNLOAD_WORKER === '0'; // escape hatch for debugging
+let lastTransferKind: Transfer['kind'] | null = null;
+
+export function setDownloadWorkerForTests(opts: { script?: string; disabled?: boolean } | null): void {
+  workerScript = opts?.script ?? path.join(__dirname, 'download-worker.js');
+  workerDisabled = opts?.disabled ?? false;
+}
+/** Which pump the most recent download attempt used. */
+export function lastTransferKindForTests(): Transfer['kind'] | null { return lastTransferKind; }
+
+async function openTransfer(client: RommClient, rom: RomInfo, controller: StallableController, resume?: ResumeRequest): Promise<Transfer> {
+  // Clients without downloadRequest (test stubs) hand over a ready Response.
+  if (!workerDisabled && typeof client.downloadRequest === 'function') {
+    try {
+      return await openWorkerTransfer(client.downloadRequest(rom.id, rom.fsName, resume), controller);
+    } catch (err) {
+      if (!(err instanceof WorkerUnavailable)) throw err;
+      console.error('Download worker unavailable, downloading in the main process:', err.message);
+      workerDisabled = true; // it won't start next time either
+    }
+  }
+  const response = await client.openDownloadStream(rom.id, rom.fsName, controller.signal, resume);
+  return {
+    kind: 'main',
+    status: response.status,
+    header: (name) => response.headers.get(name),
+    pump: (opts, onProgress) => pumpToFile(response.body!, opts, {
+      onProgress,
+      onStall: () => { controller.stalled = true; controller.abort(); },
+    }),
+    close: () => {},
+  };
+}
+
+function openWorkerTransfer(req: { url: string; headers: Record<string, string> }, controller: StallableController): Promise<Transfer> {
+  return new Promise<Transfer>((resolveOpen, rejectOpen) => {
+    const worker = new Worker(workerScript);
+    let closed = false;
+    let answered = false; // the worker has sent the response head (or an error for it)
+    let pending: { resolve: (r: PumpResult) => void; reject: (e: Error) => void; onProgress: PumpHooks['onProgress'] } | null = null;
+
+    const onAbort = () => worker.postMessage({ type: 'abort' });
+    controller.signal.addEventListener('abort', onAbort);
+    const close = () => {
+      if (closed) return;
+      closed = true;
+      controller.signal.removeEventListener('abort', onAbort);
+      void worker.terminate();
+    };
+    // Whatever is waiting on the worker right now gets the failure.
+    const fail = (err: Error) => {
+      if (pending) { pending.reject(err); pending = null; } else rejectOpen(err);
+      close();
+    };
+
+    worker.on('message', (msg: any) => {
+      switch (msg.type) {
+        case 'head': {
+          answered = true;
+          if (msg.status < 200 || msg.status > 299) {
+            fail(new Error(`Download failed: ${msg.status} ${msg.statusText}`));
+            return;
+          }
+          const headers = new Headers(msg.headers);
+          resolveOpen({
+            kind: 'worker',
+            status: msg.status,
+            header: (name) => headers.get(name),
+            pump: (opts, onProgress) => new Promise<PumpResult>((resolve, reject) => {
+              pending = { resolve, reject, onProgress };
+              worker.postMessage({ type: 'pump', opts });
+            }),
+            close,
+          });
+          break;
+        }
+        case 'progress': pending?.onProgress(msg.downloaded, msg.inlineExtract); break;
+        // Same as the in-process watchdog: flag it, abort (→ the worker's read rejects).
+        case 'stalled': controller.stalled = true; controller.abort(); break;
+        case 'done': pending?.resolve(msg.result); pending = null; break;
+        case 'error': answered = true; fail(new Error(msg.message)); break;
+      }
+    });
+    // An 'error' event is an uncaught failure inside the worker. Before it
+    // has answered, that means it never got going (script missing, module
+    // failed to load): fall back to the in-process pump.
+    worker.on('error', (err) => fail(answered ? new Error(`Download worker failed: ${err.message}`) : new WorkerUnavailable(err.message)));
+    worker.on('exit', (code) => {
+      if (!closed) fail(answered ? new Error(`Download worker stopped (exit code ${code})`) : new WorkerUnavailable(`exit code ${code}`));
+    });
+    worker.postMessage({ type: 'open', url: req.url, headers: req.headers });
+  });
+}
+
 // ── Download ────────────────────────────────────────────────────────────
 
 export async function startDownload(
@@ -419,7 +540,7 @@ export async function startDownload(
     let pumped = false;
     for (let attempt = 1; attempt <= MAX_ATTEMPTS && !pumped; attempt++) {
       // Fresh controller per attempt — an aborted controller can't be reused.
-      const controller = new AbortController() as AbortController & { stalled?: boolean };
+      const controller: StallableController = new AbortController();
       activeDownloads.set(rom.id, controller);
 
       // Partial left by a previous attempt (this run or an earlier session)?
@@ -430,34 +551,32 @@ export async function startDownload(
         if (resumeFrom > 0) { fileName = safeFileName(meta.fileName, fileName); etag = meta.etag || etag; }
       }
 
+      let transfer: Transfer | null = null;
       try {
         // The stall watchdog below only starts once the server has answered; a
         // server that accepts the connection and then says nothing would
         // otherwise hold this download — and the whole queue behind it — forever.
         const noAnswer = setTimeout(() => { controller.stalled = true; controller.abort(); }, STALL_TIMEOUT_MS);
-        let response: Response;
         try {
-          response = await client.openDownloadStream(
-            rom.id, rom.fsName, controller.signal,
-            resumeFrom > 0 ? { from: resumeFrom, ifRange: etag || undefined } : undefined
-          );
+          transfer = await openTransfer(client, rom, controller, resumeFrom > 0 ? { from: resumeFrom, ifRange: etag || undefined } : undefined);
         } finally {
           clearTimeout(noAnswer);
         }
-        etag = response.headers.get('etag') || etag;
+        lastTransferKind = transfer.kind;
+        etag = transfer.header('etag') || etag;
 
         // 206 = the server is continuing our partial. Anything else (fresh
         // start, range unsupported on an on-the-fly zip, or the file changed
         // under If-Range) is a full body from byte 0.
-        const resumed = resumeFrom > 0 && response.status === 206;
+        const resumed = resumeFrom > 0 && transfer.status === 206;
         if (resumed) {
-          const cr = response.headers.get('content-range');
+          const cr = transfer.header('content-range');
           const crMatch = cr?.match(/\/(\d+)\s*$/);
-          total = crMatch ? Number(crMatch[1]) : resumeFrom + (Number(response.headers.get('content-length')) || 0);
+          total = crMatch ? Number(crMatch[1]) : resumeFrom + (Number(transfer.header('content-length')) || 0);
         } else {
-          total = Number(response.headers.get('content-length')) || rom.size || 0;
+          total = Number(transfer.header('content-length')) || rom.size || 0;
           // Prefer the server-provided filename (multi-file roms arrive as a zip)
-          const disposition = response.headers.get('content-disposition');
+          const disposition = transfer.header('content-disposition');
           const dispMatch = disposition?.match(/filename="?([^";]+)"?/);
           if (dispMatch) {
             let raw = dispMatch[1];
@@ -494,146 +613,37 @@ export async function startDownload(
           return;
         }
 
-        // Streaming zip extractor (zip + auto-extract only). Only possible from
+        // Zip + auto-extract: extract WHILE downloading, into the staging
+        // folder (never directly into the install path). Only possible from
         // byte 0 — a zip stream can't be joined mid-file — so resumed archives
-        // skip this and extract after download via the 7za fallback instead.
-        // Entries land in the staging folder, never directly in the install path.
-        let extractor: any = null;
-        let extractorFailed = false;
-        const entryWrites: Promise<void>[] = [];
-        let extractorClosed: Promise<void> = Promise.resolve();
-        // Resolves the moment any part of inline extraction fails, so the pump
-        // never sits waiting for a 'drain' from a parser that has stopped.
-        let signalFailed: () => void = () => {};
-        const extractorFailedP = new Promise<void>((resolve) => { signalFailed = resolve; });
-        const failExtractor = () => { extractorFailed = true; signalFailed(); };
-
-        if (extract && isZip && !resumed) {
+        // extract after download via the 7za fallback instead.
+        const extractInline = extract && isZip && !resumed;
+        if (extractInline) {
           clearStaging();
           fs.mkdirSync(staging, { recursive: true });
-          extractor = unzipper.Parse();
-          extractorClosed = new Promise<void>((resolve) => {
-            extractor.on('close', resolve);
-            extractor.on('error', () => { failExtractor(); resolve(); });
-          });
-          extractor.on('entry', (entry: any) => {
-            const target = safeJoin(staging, entry.path);
-            if (!target || extractorFailed) { entry.autodrain(); return; }
-            // Never let a filesystem error escape this listener (illegal name,
-            // path too long, a file where a directory is needed, disk full…).
-            // unzipper turns a throw here into an 'error' event today, but
-            // relying on that is fragile — and with the old await-per-write
-            // pump it hung the download outright (PR #5, vlapietra). Failing
-            // the extractor explicitly routes us to the 7za fallback.
-            try {
-              if (entry.type === 'Directory') {
-                fs.mkdirSync(target, { recursive: true });
-                entry.autodrain();
-                return;
-              }
-              fs.mkdirSync(path.dirname(target), { recursive: true });
-            } catch {
-              failExtractor();
-              entry.autodrain();
-              return;
-            }
-            entryWrites.push(new Promise<void>((resolve) => {
-              const out = fs.createWriteStream(target);
-              entry.pipe(out);
-              out.on('finish', resolve);
-              out.on('error', () => { failExtractor(); entry.autodrain(); resolve(); });
-              entry.on('error', () => { failExtractor(); entry.autodrain(); resolve(); });
-            }));
-          });
         }
 
-        // Pump: chunk → part file AND (optionally) extractor. Backpressure is
-        // drain-based: we only wait when a writable's buffer is full, so network
-        // reads and disk writes overlap. (Awaiting every write's completion
-        // callback serialized the two, making a download take roughly network
-        // time PLUS disk time — noticeable on the Deck's SD card.)
         // Write the resume note now, not only when an attempt fails: if the
         // app or the machine dies mid-download, the .part stays resumable
         // instead of becoming an orphan nothing ever cleans up.
         try { fs.writeFileSync(resumeMetaPath, JSON.stringify({ fileName, etag, partPath })); } catch { /* best effort */ }
-
-        // A 4 MB buffer instead of the default 16 KB: network chunks are small
-        // (TLS records, 16–64 KB), and a bigger buffer lets the stream batch
-        // them into fewer, larger writes (writev) and fewer 'drain' round
-        // trips — measured +17% throughput with less CPU per GB. Backpressure
-        // is still drain-based, so network and disk still overlap.
-        const out = fs.createWriteStream(partPath, { highWaterMark: WRITE_BUFFER_BYTES, ...(resumed ? { flags: 'a' } : {}) });
-        let outError: Error | null = null;
-        out.on('error', (e) => { outError = e; });
 
         downloaded = resumed ? resumeFrom : 0;
         if (resumed) {
           emit({ status: 'downloading', downloaded, total, percent: total > 0 ? Math.floor((downloaded / total) * 100) : 0, message: 'Resuming download' });
         }
 
-        let lastEmit = 0;
-        let lastData = Date.now();
-        // Stall watchdog: a connection that dies without closing would other-
-        // wise block reader.read() forever (and the serial queue behind it).
-        const watchdog = setInterval(() => {
-          if (Date.now() - lastData > STALL_TIMEOUT_MS) { controller.stalled = true; controller.abort(); }
-        }, 5000);
-
-        try {
-          const body = response.body!;
-          const reader = body.getReader();
-
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            lastData = Date.now();
-            // Wrap, don't copy: Buffer.from(value) copied every byte on the
-            // main thread (~20% of the pump's CPU per GB). The chunk is ours alone
-            // once read() hands it over, and nothing below mutates it.
-            const chunk = Buffer.from(value.buffer, value.byteOffset, value.byteLength);
-            if (!out.write(chunk)) await once(out, 'drain');
-            if (outError) throw outError;
-            if (extractor && !extractorFailed) {
-              try {
-                if (!extractor.write(chunk)) await Promise.race([once(extractor, 'drain'), extractorClosed, extractorFailedP]);
-              } catch { failExtractor(); }
-            }
-            downloaded += chunk.length;
-            const now = Date.now();
-            if (now - lastEmit > 250) {
-              lastEmit = now;
-              emit({
-                status: 'downloading',
-                downloaded, total,
-                percent: total > 0 ? Math.floor((downloaded / total) * 100) : 0,
-                inlineExtract: Boolean(extractor && !extractorFailed),
-              });
-            }
+        const result = await transfer.pump(
+          { partPath, append: resumed, startAt: downloaded, total, extractTo: extractInline ? staging : null, stallMs: STALL_TIMEOUT_MS },
+          (bytes, inlineExtract) => {
+            downloaded = bytes;
+            emit({ status: 'downloading', downloaded, total, percent: total > 0 ? Math.floor((downloaded / total) * 100) : 0, inlineExtract });
           }
-        } finally {
-          clearInterval(watchdog);
-        }
+        );
+        downloaded = result.downloaded;
+        inlineExtracted = result.inlineExtracted;
 
-        await new Promise<void>((resolve, reject) => out.end((err: Error | null | undefined) => (err ? reject(err) : resolve())));
-        if (outError) throw outError;
-
-        if (downloaded === 0) {
-          throw new Error('Server sent an empty file — this rom appears to be 0 bytes in the RomM library');
-        }
-        if (total > 0 && downloaded < total) {
-          throw new Error(`Connection closed early — got ${downloaded} of ${total} bytes`);
-        }
-
-        // Complete: finish inline extraction, then promote .part → real name
-        if (extractor && !extractorFailed) {
-          extractor.end();
-          await extractorClosed;
-          await Promise.all(entryWrites);
-          inlineExtracted = !extractorFailed;
-        }
-        if (extractor && !inlineExtracted) {
-          try { extractor.destroy(); } catch { /* already closed */ }
-        }
+        // Complete: promote .part → real name
         try { fs.unlinkSync(resumeMetaPath); } catch { /* absent */ }
         try { if (fs.existsSync(filePath)) fs.unlinkSync(filePath); } catch { /* best effort */ }
         fs.renameSync(partPath, filePath);
@@ -662,8 +672,10 @@ export async function startDownload(
         });
         await new Promise((r) => setTimeout(r, RETRY_DELAY_MS[attempt - 1] ?? 5000));
         // Cancelled while waiting to retry?
-        const cur = activeDownloads.get(rom.id) as (AbortController & { stalled?: boolean }) | undefined;
+        const cur = activeDownloads.get(rom.id) as StallableController | undefined;
         if (cur?.signal.aborted && !cur.stalled) { userCancelled = true; throw err; }
+      } finally {
+        transfer?.close();
       }
     }
 
