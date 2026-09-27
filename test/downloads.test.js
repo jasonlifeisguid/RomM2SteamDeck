@@ -187,6 +187,54 @@ test('non-extract platform: plain download to the platform folder', async () => 
   assert.equal(downloads.findDownload(21).filePath, dest);
 });
 
+/**
+ * A body whose chunks are views at non-zero offsets into bigger buffers, in
+ * irregular sizes — what a network stream may hand over. The pump wraps chunks
+ * without copying, so it must honour byteOffset/byteLength exactly.
+ */
+function offsetViewClient(file, fileName) {
+  return {
+    openDownloadStream: async () => {
+      const data = fs.readFileSync(file);
+      const sizes = [1, 7, 16384, 3, 65536, 999, 131072];
+      let pos = 0;
+      let i = 0;
+      return new Response(new ReadableStream({
+        pull(controller) {
+          if (pos >= data.length) { controller.close(); return; }
+          const n = Math.min(sizes[i++ % sizes.length], data.length - pos);
+          const pad = 11 + (i % 5); // bytes before and after the chunk that must never reach the file
+          const backing = new Uint8Array(pad + n + pad).fill(0xee);
+          backing.set(data.subarray(pos, pos + n), pad);
+          controller.enqueue(new Uint8Array(backing.buffer, pad, n));
+          pos += n;
+        },
+      }), { status: 200, headers: { 'content-length': String(data.length), 'content-disposition': `attachment; filename="${fileName}"`, etag: '"v"' } });
+    },
+  };
+}
+
+test('chunks that are views into larger buffers reach the file and the inline extractor byte-exact', async () => {
+  const t = makeTemp();
+  const sha = (buf) => require('crypto').createHash('sha256').update(buf).digest('hex');
+
+  // Plain download: the .part/final file must equal the source byte for byte.
+  const bin = path.join(t.root, 'views.bin');
+  fs.writeFileSync(bin, require('crypto').randomBytes(700_001));
+  const plain = await run(offsetViewClient(bin, 'views.bin'), { id: 31, name: 'Views', fsName: 'views.bin', platformId: 2, size: 0 });
+  assert.equal(plain.at(-1).status, 'complete', JSON.stringify(plain.at(-1)));
+  assert.equal(sha(fs.readFileSync(path.join(t.loose, 'views.bin'))), sha(fs.readFileSync(bin)));
+
+  // Zip on an extracting platform: the same chunks also feed the inline extractor.
+  const payload = require('crypto').randomBytes(300_000);
+  const zip = writeZip(path.join(t.root, 'views.zip'), [['G/data.bin', payload], ['G/run.exe', 'MZ']]);
+  const events = await run(offsetViewClient(zip, 'views.zip'), rom(32, 'Views Zip', 'views.zip'));
+  assert.equal(events.at(-1).status, 'extracted', JSON.stringify(events.at(-1)));
+  assert.ok(events.some((e) => e.inlineExtract === true), 'inline extraction started');
+  assert.ok(!events.some((e) => e.status === 'extracting'), 'and finished without the 7za fallback');
+  assert.equal(sha(fs.readFileSync(path.join(t.install, 'G', 'data.bin'))), sha(payload));
+});
+
 test('a server that never answers times out and is retried, instead of blocking the queue forever', async (t2) => {
   const t = makeTemp();
   downloads.setTimeoutsForTests({ stallMs: 150, retryDelaysMs: [10, 10] });
